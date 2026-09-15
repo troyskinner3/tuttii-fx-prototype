@@ -272,8 +272,10 @@
     position: relative;
     flex-shrink: 0;
   }
-  /* Thin FX lane sitting between Vocal and Beats -- ~25% of their height,
-     just enough to read a clip's effect name without feeling squished. */
+  /* Thin FX lane sitting between Vocal and Beats -- ~25% of their height
+     per stacked layer, just enough to read a clip's effect name without
+     feeling squished. This is the single-layer fallback; main.js sets an
+     inline height once anything actually stacks. */
   .row.fx { height: 18px; }
   .bar-line {
     position: absolute;
@@ -361,8 +363,9 @@
   .clip.selected.vocal { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(79,209,232,0.35); }
   .clip.selected.beats { border-color: var(--pink); box-shadow: 0 0 0 2px rgba(232,75,198,0.35); }
   .clip.fx {
-    top: 2px;
-    bottom: 2px;
+    /* top/height are set inline per clip (main.js) since they depend on
+       which stack slot the clip currently occupies -- can vary per clip
+       when FX are layered, not a fixed single row anymore. */
     padding: 0 6px;
     justify-content: center;
     background: linear-gradient(160deg, #4A3510, #2E2008);

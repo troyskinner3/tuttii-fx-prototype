@@ -20,6 +20,9 @@
   let BAR_PX = MIN_BAR_PX;
   const TOTAL_BARS = 32;
   const MIN_DUR_BARS = 1;
+  const MAX_FX_LAYERS = 4; // arbitrary cap on how many FX clips can stack at once, for v1
+  const FX_SUBLANE_PX = 18; // height of one stacked FX row (matches the original single-row height)
+  const FX_LAYER_SWAP_THRESHOLD_PX = 10; // how far a vertical drag on an FX clip has to travel before it's read as "reorder the stack" rather than noise
 
   // Stem paths below are plain relative paths (no leading slash) on purpose:
   // fetch() resolves them against the page's own URL, so the same files
@@ -45,15 +48,50 @@
 
   // FX clips don't use layout() -- unlike Vocal/Beats, they're positioned
   // freely anywhere on the timeline (snapped to the nearest bar) rather than
-  // always flush-packed against their neighbors. This is the one guardrail
-  // that replaces flush-packing: two FX clips still can't occupy the same
-  // bars, since there's currently a single shared master filter (no
-  // per-clip node instances yet) with nothing defined for what two
-  // simultaneous automations on the same param would even mean.
-  function fxOverlaps(candidate, excludeUid) {
-    return clips.fx.some(c => c.uid !== excludeUid &&
-      candidate.position < c.position + c.duration &&
-      candidate.position + candidate.duration > c.position);
+  // always flush-packed against their neighbors.
+  //
+  // They CAN overlap now (layering) -- each FX clip gets its own dedicated
+  // filter node, chained in series with every other FX clip's node ordered
+  // by .layer (lower layer = higher priority = earlier in the chain =
+  // visually closer to the top of the FX lane), so two overlapping clips
+  // just both apply during their shared window. The only guardrail left is
+  // a cap on how many can stack at once (MAX_FX_LAYERS), both to keep the
+  // lane's height sane and to keep the signal chain from growing unbounded.
+  function fxTimeOverlap(a, b) {
+    return a.position < b.position + b.duration && a.position + a.duration > b.position;
+  }
+  function fxOverlapCount(candidate, excludeUid) {
+    return clips.fx.filter(c => c.uid !== excludeUid && fxTimeOverlap(candidate, c)).length;
+  }
+  function fxExceedsMaxLayers(candidate, excludeUid) {
+    return fxOverlapCount(candidate, excludeUid) >= MAX_FX_LAYERS;
+  }
+  // A clip's visual row: how many higher-priority (lower .layer) clips
+  // currently overlap it in time. Since .layer is a total order across
+  // every FX clip (see allocateTopFxLayer), this needs no separate
+  // sweep-line pass -- it's recomputed fresh on every render, so the lane
+  // only grows where clips actually coexist, not just because many exist.
+  function fxSlotFor(clip) {
+    return clips.fx.filter(c => c.uid !== clip.uid && c.layer < clip.layer && fxTimeOverlap(c, clip)).length;
+  }
+  // New/duplicated FX clips always land on top (processed first), per the
+  // "new layers go on top" convention -- a monotonically decreasing
+  // allocator guarantees that without ever renumbering existing clips.
+  let nextFxLayer = 0;
+  function allocateTopFxLayer() { return --nextFxLayer; }
+  // Swaps a clip's stacking priority with whichever FX clip it currently
+  // overlaps that's immediately next in the given direction (-1 = toward
+  // the top/higher priority, +1 = toward the bottom). No-ops if nothing
+  // overlaps it on that side -- there's nothing to reorder against.
+  function swapFxLayer(clip, direction) {
+    const candidates = clips.fx.filter(c => c.uid !== clip.uid && fxTimeOverlap(c, clip) &&
+      (direction < 0 ? c.layer < clip.layer : c.layer > clip.layer));
+    if (!candidates.length) return;
+    const neighbor = candidates.reduce((best, c) =>
+      (direction < 0 ? c.layer > best.layer : c.layer < best.layer) ? c : best);
+    const tmp = clip.layer;
+    clip.layer = neighbor.layer;
+    neighbor.layer = tmp;
   }
 
   // ---------- Song / section data ----------
@@ -178,14 +216,22 @@
   let selectedUid = null;
 
   // ---------- FX ----------
-  // One row per effect type in the library (mirrors Silence's flat
-  // duration-chip row); durationsBars are the preset lengths offered as
-  // draggable chips. Only one effect exists for now -- highpass-sweep --
-  // but scheduleFxClip() already branches on effectId so adding a second
-  // type later is additive, not a rewrite.
+  // One row per effect type in the library (tap-to-expand, same pattern as
+  // Songs); durationsBars are the preset lengths offered as draggable
+  // chips. filterType/fromHz/toHz/curvePower describe the BiquadFilterNode
+  // automation curve for that effect -- fromHz doubles as its neutral/reset
+  // value, since every sweep here starts at rest and returns there at the
+  // end. Both current effects share the same node type (BiquadFilterNode)
+  // and curve shape, just mirrored; a future effect needing a different
+  // kind of node (e.g. a phaser's allpass network) would branch inside
+  // buildFxNode/scheduleFxClip on effectId rather than reusing these fields.
   const FX_EFFECTS = [
-    { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16] },
+    { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16],
+      filterType: "highpass", fromHz: 20, toHz: 15000, curvePower: 3 },
+    { id: "lowpass-sweep", label: "Low Pass Sweep", icon: "📉", durationsBars: [2, 4, 8, 16],
+      filterType: "lowpass", fromHz: 20000, toHz: 20, curvePower: 3 },
   ];
+  function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
 
   // ---------- Analytics ----------
   // Fires once per page load, the first time the user does something that
@@ -237,6 +283,7 @@
   const beatsRow = document.getElementById("beatsRow");
   const vocalLane = document.getElementById("vocalLane");
   const beatsLane = document.getElementById("beatsLane");
+  const fxRow = document.getElementById("fxRow");
   const fxLane = document.getElementById("fxLane");
   const vocalEmpty = document.getElementById("vocalEmpty");
   const beatsEmpty = document.getElementById("beatsEmpty");
@@ -678,9 +725,9 @@
         const rect = fxLane.getBoundingClientRect();
         const cursorBars = pxToBars(x - rect.left);
         const snappedPos = snap(cursorBars - sec.durBars / 2, 1);
-        const overlapping = fxOverlaps({ position: snappedPos, duration: sec.durBars }, null);
-        laneEl.classList.add(overlapping ? "drop-invalid" : "drop-valid");
-        if (overlapping) type = null; // ghost stays neutral, not a false "fx" promise
+        const tooDeep = fxExceedsMaxLayers({ position: snappedPos, duration: sec.durBars }, null);
+        laneEl.classList.add(tooDeep ? "drop-invalid" : "drop-valid");
+        if (tooDeep) type = null; // ghost stays neutral, not a false "fx" promise
       } else if (type) {
         laneEl.classList.add("drop-valid");
       }
@@ -794,11 +841,12 @@
       // No flush-packing here -- lands wherever it's dropped, snapped to
       // the nearest bar (cursorBars is where the pointer is, and the ghost
       // is centered on the pointer, so center the clip on it too). Refuses
-      // the drop outright if that would overlap an existing FX clip (see
-      // fxOverlaps' comment for why) rather than shoving neighbors aside.
+      // the drop outright if that would stack past MAX_FX_LAYERS, rather
+      // than shoving neighbors aside. New clips always land on top.
       const snappedPos = snap(cursorBars - clip.duration / 2, 1);
-      if (fxOverlaps({ position: snappedPos, duration: clip.duration }, null)) return;
+      if (fxExceedsMaxLayers({ position: snappedPos, duration: clip.duration }, null)) return;
       clip.position = snappedPos;
+      clip.layer = allocateTopFxLayer();
       clips.fx.push(clip);
     } else {
       const arr = clips[type];
@@ -858,6 +906,14 @@
 
     clips.vocal.forEach(c => vocalLane.appendChild(buildClipEl(c)));
     clips.beats.forEach(c => beatsLane.appendChild(buildClipEl(c)));
+
+    // FX row grows to fit however deep the stack currently gets -- only
+    // where clips actually overlap in time, not just because many exist
+    // (fxSlotFor is recomputed fresh from current overlaps each render).
+    const maxSlot = clips.fx.length ? Math.max(...clips.fx.map(fxSlotFor)) : 0;
+    const fxRowPx = (maxSlot + 1) * FX_SUBLANE_PX;
+    fxRow.style.height = fxRowPx + "px";
+    fxLane.style.height = fxRowPx + "px";
     clips.fx.forEach(c => fxLane.appendChild(buildClipEl(c)));
 
     const anyClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.fx.length > 0;
@@ -872,6 +928,15 @@
     el.style.left = barsToPx(clip.position) + "px";
     el.style.width = barsToPx(clip.duration) + "px";
     el.dataset.uid = clip.uid;
+    if (clip.track === "fx") {
+      // Vertical position (and therefore visible top/bottom) is driven
+      // entirely by the current stack slot, not CSS -- top/bottom:2px
+      // (the single-row default) would fight with a taller lane once
+      // clips actually overlap and stack.
+      el.style.top = (fxSlotFor(clip) * FX_SUBLANE_PX + 1) + "px";
+      el.style.bottom = "";
+      el.style.height = (FX_SUBLANE_PX - 2) + "px";
+    }
 
     let bodyHtml;
     if (clip.isSilence) {
@@ -934,10 +999,12 @@
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     const startX = e.clientX;
+    const startY = e.clientY;
     const startCenterBars = clip.position + clip.duration / 2;
     const startScrollLeft = scrollArea.scrollLeft;
     let moved = false;
     let liveDx = 0;
+    let liveDxPx = 0, liveDyPx = 0; // FX only: raw pixels, for the horizontal-move-vs-vertical-restack decision
     // Undecided until either the hold delay elapses (-> reorder) or the
     // finger moves past the threshold first (-> scroll).
     let decided = false;
@@ -950,6 +1017,7 @@
 
     function onMove(ev) {
       const dxPx = ev.clientX - startX;
+      const dyPx = ev.clientY - startY;
       if (!decided) {
         if (Math.abs(dxPx) > CLIP_MOVE_THRESHOLD_PX) {
           decided = true;
@@ -961,8 +1029,10 @@
       }
       if (isReorder) {
         const dx = pxToBars(dxPx);
-        if (Math.abs(dx) > 0.05) moved = true;
+        if (Math.abs(dx) > 0.05 || (clip.track === "fx" && Math.abs(dyPx) > FX_LAYER_SWAP_THRESHOLD_PX)) moved = true;
         liveDx = dx;
+        liveDxPx = dxPx;
+        liveDyPx = dyPx;
         // Free visual drag only — the real array order (and therefore every
         // clip's actual position) is untouched until release, so nothing here
         // can produce a gap or overlap mid-gesture.
@@ -986,11 +1056,21 @@
       if (!isReorder) return; // was a scroll gesture, nothing left to do
       if (moved) {
         if (clip.track === "fx") {
-          // Free positioning, not flush-packing -- el.style.left already
-          // live-previewed clip.position + liveDx during the drag, so just
-          // commit that same left edge (snapped, overlap-checked). Silently
-          // reverts to the original position if it would overlap.
-          moveFxClip(clip, clip.position + liveDx);
+          // A vertical drag that outweighs the horizontal one restacks
+          // instead of repositioning -- swaps priority with whichever FX
+          // clip it currently overlaps that's immediately next in that
+          // direction (see swapFxLayer). Committed on release only; there's
+          // no live vertical preview mid-drag, just the horizontal one.
+          const vertical = Math.abs(liveDyPx) > Math.abs(liveDxPx) && Math.abs(liveDyPx) > FX_LAYER_SWAP_THRESHOLD_PX;
+          if (vertical) {
+            swapFxLayer(clip, liveDyPx < 0 ? -1 : 1);
+          } else {
+            // Free positioning, not flush-packing -- el.style.left already
+            // live-previewed clip.position + liveDx during the drag, so just
+            // commit that same left edge (snapped, depth-checked). Silently
+            // reverts to the original position if it would stack too deep.
+            moveFxClip(clip, clip.position + liveDx);
+          }
           renderClips();
           selectClip(clip.uid);
         } else {
@@ -1049,8 +1129,11 @@
   // clip, per fxOverlaps' comment.
   function moveFxClip(clip, desiredLeftBars) {
     const snapped = snap(desiredLeftBars, 1);
-    if (fxOverlaps({ position: snapped, duration: clip.duration }, clip.uid)) return;
+    if (fxExceedsMaxLayers({ position: snapped, duration: clip.duration }, clip.uid)) return;
     clip.position = snapped;
+    // .layer is untouched by a horizontal move -- stacking order only
+    // changes via an explicit vertical drag (see startClipMove's
+    // swapFxLayer branch) or when a brand-new clip is created.
   }
 
   function startClipTrim(e, clip, el, side) {
@@ -1075,30 +1158,27 @@
         : Math.floor(clip.sourceEnd / BAR_SECONDS);
       maxDurBars = Math.max(MIN_DUR_BARS, maxDurBars);
     }
-    // FX has no source buffer to bound it, but it does have neighbors --
-    // freely-positioned clips can still butt up against another FX clip on
-    // either side, so growing past that would overlap it (same rule as a drop).
-    if (clip.track === "fx") {
-      const neighbors = clips.fx.filter(c => c.uid !== clip.uid);
-      if (side === "right") {
-        const next = neighbors.filter(c => c.position >= clip.position + clip.duration).sort((a, b) => a.position - b.position)[0];
-        if (next) maxDurBars = Math.max(MIN_DUR_BARS, next.position - clip.position);
-      } else {
-        const prev = neighbors.filter(c => c.position + c.duration <= clip.position).sort((a, b) => b.position - a.position)[0];
-        if (prev) maxDurBars = Math.max(MIN_DUR_BARS, (clip.position + clip.duration) - (prev.position + prev.duration));
-        // Also can't grow past bar 0 -- the right edge is fixed, so the
-        // largest achievable duration is that edge's distance from the
-        // timeline start. Without this, the live preview could show more
-        // growth than onUp can actually commit (it clamps position at 0),
-        // producing exactly the pop-on-release this handle fix is for.
-        maxDurBars = Math.min(maxDurBars, clip.position + clip.duration);
-      }
-    }
-
     function previewDuration() {
       const raw = side === "right"
         ? Math.max(MIN_DUR_BARS, roundStep(startDur + finalDx, 1))
         : Math.max(MIN_DUR_BARS, roundStep(startDur - finalDx, 1));
+      // FX has no source buffer to bound it, but growing can still stack it
+      // past MAX_FX_LAYERS or push its position below bar 0 -- shrinking
+      // from the requested size only ever reduces both risks, so walking
+      // down from `raw` is guaranteed to land on a valid value at or before
+      // startDur (the clip's own pre-gesture state, which must already be
+      // valid). Re-checked live every frame rather than precomputed once,
+      // since which sizes are valid can itself depend on this clip's
+      // current (still-changing) position during a left-handle drag.
+      if (clip.track === "fx") {
+        for (let d = raw; d > MIN_DUR_BARS; d--) {
+          const candidate = side === "right"
+            ? { position: clip.position, duration: d }
+            : { position: (clip.position + startDur) - d, duration: d };
+          if (candidate.position >= 0 && !fxExceedsMaxLayers(candidate, clip.uid)) return d;
+        }
+        return MIN_DUR_BARS;
+      }
       return Math.min(raw, maxDurBars);
     }
 
@@ -1217,10 +1297,13 @@
     const clone = { ...original, uid: uidCounter++ };
     if (type === "fx") {
       // No flush order to insert into -- place it right after the
-      // original, nudging right bar-by-bar until it clears any overlap.
+      // original, nudging right bar-by-bar until the stack there has room.
+      // Duplicating is "creating a new clip" too, so it lands on top like
+      // any other new FX clip.
       let pos = original.position + original.duration;
-      while (fxOverlaps({ position: pos, duration: clone.duration }, clone.uid) && pos < TOTAL_BARS) pos++;
+      while (fxExceedsMaxLayers({ position: pos, duration: clone.duration }, clone.uid) && pos < TOTAL_BARS) pos++;
       clone.position = pos;
+      clone.layer = allocateTopFxLayer();
       arr.push(clone);
     } else {
       arr.splice(idx + 1, 0, clone);
@@ -1432,93 +1515,89 @@
   }
 
   // ---------- FX audio engine ----------
-  // Vocal/beats clips route through this single shared BiquadFilterNode
-  // (master bus) instead of straight to the destination, so an FX clip
-  // affects everything -- exactly one filter for now since only one FX
-  // type exists and the FX lane can't overlap itself yet. Once a second
-  // effect type lets clips actually stack (see the layered-FX discussion),
-  // this becomes one node per active clip instance instead of one shared
-  // node; nothing else here should need to change shape when that happens.
-  // Cached per-context (like noiseBufferCache) since a fresh
-  // OfflineAudioContext is created for every export.
-  let masterFilterNode = null;
-  const FX_NEUTRAL_HZ = 20;   // effectively bypassed on a 2-pole highpass
-  const FX_PEAK_HZ = 15000;   // short of 20kHz -- the full sweep read as cutting too much to stay musical
+  // Each FX clip gets its own dedicated BiquadFilterNode instance (built
+  // fresh every play()/export call -- see buildFxChain), chained in series
+  // ordered by .layer: master mix -> lowest-layer clip's node -> ... ->
+  // highest-layer's node -> destination. A node is only ever non-neutral
+  // during its own clip's window, so simply keeping every FX clip's node
+  // permanently in the chain for the whole run is enough to get correct
+  // layering for free -- two overlapping clips both apply during their
+  // shared window, with no dynamic connect/disconnect scheduling needed.
+  // Fresh nodes every run also means there's nothing to reset between
+  // plays (no stale automation from a previous run to cancel).
   const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant coefficient jump (avoids a filter-transient click)
-  // >1 skews the rise curve later in time -- most of the audible frequency
-  // change happens in roughly the last fifth of the sweep instead of
-  // spreading evenly, so it reads as a sudden kick near the end rather than
-  // a steady climb. 1 would reproduce a plain exponential ramp.
-  const FX_CURVE_POWER = 3;
-  const FX_CURVE_SEGMENTS = 24; // exponentialRampToValueAtTime is only a pure exponential; chaining this many short ramps through the shaped curve approximates the power curve above
-
-  function getMasterFilter(ctx) {
-    if (!masterFilterNode || masterFilterNode.context !== ctx) {
-      masterFilterNode = ctx.createBiquadFilter();
-      masterFilterNode.type = "highpass";
-      masterFilterNode.frequency.value = FX_NEUTRAL_HZ;
-      masterFilterNode.connect(ctx.destination);
-    }
-    return masterFilterNode;
-  }
-
-  // Cancels anything still scheduled from a previous play() run (e.g. a
-  // sweep that was mid-ramp when paused) and re-anchors at neutral, so
-  // every play() call starts the filter from a known, silent-of-side-effects
-  // state before scheduling this run's FX clips.
-  function resetFilterToNeutral(filter, atTime) {
-    filter.frequency.cancelScheduledValues(atTime);
-    filter.frequency.setValueAtTime(FX_NEUTRAL_HZ, atTime);
-  }
+  const FX_CURVE_SEGMENTS = 24; // exponentialRampToValueAtTime is only a pure exponential; chaining this many short ramps through the shaped curve approximates the power curve below
 
   // Exponential interpolation matching exactly how exponentialRampToValueAtTime
   // itself interpolates, so a value computed here for a given clip-relative
   // time lines up with where the real ramp would actually be at that instant.
   // That's what lets playback pick up mid-sweep (e.g. after a seek lands
-  // inside an FX clip) without an audible jump.
-  function highpassSweepValueAt(tSec, totalDurSec, riseDurSec) {
-    if (tSec <= 0 || tSec >= totalDurSec) return FX_NEUTRAL_HZ;
+  // inside an FX clip) without an audible jump. Works for either sweep
+  // direction (fromHz > toHz, as in high pass, or the reverse, as in low
+  // pass) since it's just exponential interpolation between two positive values.
+  function fxSweepValueAt(cfg, tSec, totalDurSec, riseDurSec) {
+    if (tSec <= 0 || tSec >= totalDurSec) return cfg.fromHz;
     if (tSec <= riseDurSec) {
       const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
-      const shapedFrac = Math.pow(linFrac, FX_CURVE_POWER); // stays low longer, then climbs fast near riseDurSec
-      return FX_NEUTRAL_HZ * Math.pow(FX_PEAK_HZ / FX_NEUTRAL_HZ, shapedFrac);
+      const shapedFrac = Math.pow(linFrac, cfg.curvePower); // stays near fromHz longer, then races toward toHz near riseDurSec
+      return cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, shapedFrac);
     }
     // The reset tail is meant to read as a snap, not part of the musical
-    // curve, so it stays a plain (unshaped) exponential back to neutral.
+    // curve, so it stays a plain (unshaped) exponential back to fromHz.
     const fallDurSec = totalDurSec - riseDurSec;
     const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
-    return FX_PEAK_HZ * Math.pow(FX_NEUTRAL_HZ / FX_PEAK_HZ, frac);
+    return cfg.toHz * Math.pow(cfg.fromHz / cfg.toHz, frac);
   }
 
-  // 20Hz -> FX_PEAK_HZ shaped rise over (almost) the whole clip, then a
-  // brief exponential ramp back to 20Hz in the final FX_RESET_RAMP_SEC so
+  // fromHz -> toHz shaped sweep over (almost) the whole clip, then a brief
+  // exponential ramp back to fromHz in the final FX_RESET_RAMP_SEC so
   // whatever plays after this clip isn't left filtered. offsetIntoClipSec
   // lets a clip that starts partway through (a seek landing inside it)
-  // resume from the curve's correct value instead of restarting at 20Hz.
-  function scheduleHighpassSweep(filter, clip, at, offsetIntoClipSec) {
+  // resume from the curve's correct value instead of restarting at fromHz.
+  function scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
     const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
-    const startVal = highpassSweepValueAt(offsetIntoClipSec, totalDurSec, riseDurSec);
-    const p = filter.frequency;
+    const startVal = fxSweepValueAt(cfg, offsetIntoClipSec, totalDurSec, riseDurSec);
+    const p = node.frequency;
 
     p.setValueAtTime(startVal, at);
     if (offsetIntoClipSec < riseDurSec) {
       // exponentialRampToValueAtTime alone only produces a plain (constant
       // ratio-per-second) exponential -- chaining several shorter ramps
-      // through highpassSweepValueAt's shaped checkpoints approximates the
+      // through fxSweepValueAt's shaped checkpoints approximates the
       // sharper power curve instead, while still using only native ramp
       // primitives (no setValueCurveAtTime).
       for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
         const segT = offsetIntoClipSec + (riseDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
-        p.exponentialRampToValueAtTime(highpassSweepValueAt(segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
+        p.exponentialRampToValueAtTime(fxSweepValueAt(cfg, segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
       }
     }
     const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
-    p.exponentialRampToValueAtTime(FX_NEUTRAL_HZ, resetEndAt);
+    p.exponentialRampToValueAtTime(cfg.fromHz, resetEndAt);
   }
 
-  function scheduleFxClip(filter, clip, at, offsetIntoClipSec) {
-    if (clip.effectId === "highpass-sweep") scheduleHighpassSweep(filter, clip, at, offsetIntoClipSec || 0);
+  function scheduleFxClip(node, clip, at, offsetIntoClipSec) {
+    const cfg = fxEffectFor(clip.effectId);
+    if (cfg) scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec || 0);
+  }
+
+  // Builds one filter node per FX clip currently on the timeline and wires
+  // them in series, ordered by .layer ascending (lowest layer = highest
+  // priority = first in the chain = visually topmost). Returns the ordered
+  // {clip, node} list; entries[0].node is where the Vocal/Beats mix should
+  // connect (or straight to ctx.destination when the list is empty).
+  function buildFxChain(ctx) {
+    const sorted = [...clips.fx].sort((a, b) => a.layer - b.layer);
+    const entries = sorted.map(clip => {
+      const cfg = fxEffectFor(clip.effectId);
+      const node = ctx.createBiquadFilter();
+      node.type = cfg.filterType;
+      node.frequency.value = cfg.fromHz;
+      return { clip, node };
+    });
+    for (let i = 0; i < entries.length - 1; i++) entries[i].node.connect(entries[i + 1].node);
+    if (entries.length) entries[entries.length - 1].node.connect(ctx.destination);
+    return entries;
   }
 
   function scheduleClip(ctx, dest, clip, at, dur, offsetIntoClipSec) {
@@ -1793,8 +1872,10 @@
     playStartCtxTime = ctx.currentTime + 0.06;
     playStartBar = playheadBar;
 
-    const filter = getMasterFilter(ctx);
-    resetFilterToNeutral(filter, playStartCtxTime);
+    // Fresh node per FX clip every play() call -- nothing to reset between
+    // runs, unlike the old single shared filter.
+    const fxChain = buildFxChain(ctx);
+    const mixDest = fxChain.length ? fxChain[0].node : ctx.destination;
 
     [...clips.vocal, ...clips.beats].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
@@ -1802,15 +1883,15 @@
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
       const startDelaySec = Math.max(0, barsToSeconds(clip.position - playheadBar));
       const playDurSec = barsToSeconds(clip.duration - offsetIntoClipBars);
-      scheduleClip(ctx, filter, clip, playStartCtxTime + startDelaySec, playDurSec, barsToSeconds(offsetIntoClipBars));
+      scheduleClip(ctx, mixDest, clip, playStartCtxTime + startDelaySec, playDurSec, barsToSeconds(offsetIntoClipBars));
     });
 
-    clips.fx.forEach(clip => {
+    fxChain.forEach(({ clip, node }) => {
       const clipEndBar = clip.position + clip.duration;
       if (clipEndBar <= playheadBar) return;
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
       const startDelaySec = Math.max(0, barsToSeconds(clip.position - playheadBar));
-      scheduleFxClip(filter, clip, playStartCtxTime + startDelaySec, barsToSeconds(offsetIntoClipBars));
+      scheduleFxClip(node, clip, playStartCtxTime + startDelaySec, barsToSeconds(offsetIntoClipBars));
     });
 
     isPlaying = true;
@@ -1871,14 +1952,14 @@
     const endSec = barsToSeconds(endBars);
     const sampleRate = 44100;
     const offline = new OfflineAudioContext(2, Math.ceil((endSec + 0.5) * sampleRate), sampleRate);
-    const filter = getMasterFilter(offline);
-    resetFilterToNeutral(filter, 0);
+    const fxChain = buildFxChain(offline);
+    const mixDest = fxChain.length ? fxChain[0].node : offline.destination;
 
     [...clips.vocal, ...clips.beats].forEach(clip => {
-      scheduleClip(offline, filter, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
+      scheduleClip(offline, mixDest, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
     });
-    clips.fx.forEach(clip => {
-      scheduleFxClip(filter, clip, barsToSeconds(clip.position) + 0.05, 0);
+    fxChain.forEach(({ clip, node }) => {
+      scheduleFxClip(node, clip, barsToSeconds(clip.position) + 0.05, 0);
     });
 
     return offline.startRendering();

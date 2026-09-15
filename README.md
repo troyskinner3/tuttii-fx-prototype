@@ -18,36 +18,61 @@ timeline.
 Unlike Vocal/Beats, the FX lane is **freely positioned, not flush-packed**:
 a clip lands wherever it's dropped (snapped to the nearest bar) and stays
 there — dropping, moving, or trimming one doesn't push its neighbors
-around, and `layout()` is never called for the `fx` track. The one
-guardrail is that two FX clips still can't occupy overlapping bars (a
-single shared filter node, see below, has nothing defined for what two
-simultaneous automations on it would mean) — an overlapping drop is
-rejected outright (with a live red-tint preview while dragging), a trim is
-capped at the nearest neighbor, and a move reverts silently. Everything
+around, and `layout()` is never called for the `fx` track. Everything
 else — move, trim, duplicate, delete, undo/redo — is reused as-is from
 Vocal/Beats' generic clip machinery, just without the reflow step.
 
-FX clips automate a single shared master `BiquadFilterNode` that both
-Vocal and Beats route through before the destination — so an effect applies
-to everything unless a future effect type says otherwise. Only one FX type
-exists so far:
+**FX clips can stack (layering).** Every FX clip has a `.layer` (lower =
+higher priority = processed first = visually closer to the top of the FX
+lane), assigned by a monotonically-decreasing allocator (`allocateTopFxLayer`)
+so a brand-new clip always lands strictly on top of everything else — no
+renumbering needed. A clip's visual row (`fxSlotFor`) is just "how many
+higher-priority clips currently overlap me in time," recomputed fresh on
+every render, so the lane only grows where clips actually coexist (capped
+at `MAX_FX_LAYERS`, 4 for now), not just because many exist somewhere on
+the timeline. Dragging a clip mostly vertically (past a small threshold)
+swaps its priority with whichever overlapping clip is immediately next in
+that direction — the FX equivalent of dragging a layer up/down a stack in
+an image editor; dragging mostly horizontally still just repositions it in
+time, and `.layer` is untouched either way unless that vertical swap fires.
 
-- **High Pass Sweep** (2/4/8/16-bar variants): highpass cutoff sweeps from
-  20Hz (neutral) up to 15kHz (peak — kept short of the full 20kHz, which
-  cut too much of the mix to still read as musical) over the clip's
-  duration, then ramps back to 20Hz in the final ~15ms so it doesn't leave
-  the next section filtered. A hard instant reset was considered and
-  rejected — an instantaneous filter-coefficient jump risks a click even
-  though the signal itself is already near-silent up there; the brief ramp
-  avoids that while still reading as a snap.
+Audio-wise, each FX clip gets its **own dedicated `BiquadFilterNode`**
+(`buildFxChain`, rebuilt fresh every `play()`/export call), chained in
+series ordered by `.layer` before the Vocal/Beats mix reaches the
+destination. A node only departs from neutral during its own clip's
+window, so simply keeping every FX clip's node permanently in that series
+chain for the whole run is enough to get correct layering for free — no
+dynamic connect/disconnect scheduling needed, and two overlapping clips
+just both apply during their shared window, in priority order.
 
-  The rise isn't a plain exponential — `FX_CURVE_POWER` (currently 3)
-  reshapes it so most of the audible change happens in roughly the last
-  fifth of the sweep instead of spreading evenly, reading as a sudden kick
-  near the end rather than a steady climb. Scheduled as a chain of ~24
-  short `exponentialRampToValueAtTime` segments sampled off that shaped
-  curve, since the native API alone only produces a constant-ratio
-  (plain exponential) ramp.
+Two effect types exist so far, both mirror images of the same shaped
+sweep on a `BiquadFilterNode`'s cutoff:
+
+- **High Pass Sweep** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
+  (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
+  too much of the mix to still read as musical) over the clip's duration,
+  then ramps back to 20Hz in the final ~15ms so it doesn't leave the next
+  section filtered. A hard instant reset was considered and rejected — an
+  instantaneous filter-coefficient jump risks a click even though the
+  signal itself is already near-silent up there; the brief ramp avoids
+  that while still reading as a snap.
+- **Low Pass Sweep** (2/4/8/16-bar variants): the mirror image — cutoff
+  sweeps from 20kHz (neutral) down to 20Hz (the classic DJ "breakdown,"
+  where going all the way to near-total muffling is the point, unlike high
+  pass's pulled-back peak) then resets back up to 20kHz.
+
+  Neither sweep is a plain exponential — `curvePower` (currently 3 for
+  both) reshapes the rise so most of the audible change happens in roughly
+  the last fifth of the sweep instead of spreading evenly, reading as a
+  sudden kick near the end rather than a steady climb. Scheduled as a
+  chain of ~24 short `exponentialRampToValueAtTime` segments sampled off
+  that shaped curve (`fxSweepValueAt`), since the native API alone only
+  produces a constant-ratio (plain exponential) ramp. Both effects share
+  this same scheduling code (`scheduleFxSweep`) parameterized by
+  `fromHz`/`toHz`/`curvePower` off the `FX_EFFECTS` entry — a future effect
+  needing a genuinely different curve shape or automation target (e.g. a
+  phaser's dry/wet mix) would add its own scheduling function rather than
+  overloading this one.
 
 Known limitation, intentional for now: this is a **single global filter
 node**, not one instance per clip — the FX lane can't have overlapping
