@@ -32,13 +32,22 @@ Vocal and Beats route through before the destination — so an effect applies
 to everything unless a future effect type says otherwise. Only one FX type
 exists so far:
 
-- **High Pass Sweep** (2/4/8/16-bar variants): highpass cutoff sweeps
-  exponentially from 20Hz (neutral) up to 20kHz (peak, most content
-  blocked) over the clip's duration, then ramps back to 20Hz in the final
-  ~15ms so it doesn't leave the next section filtered. A hard instant
-  reset was considered and rejected — an instantaneous filter-coefficient
-  jump risks a click even though the signal itself is already near-silent
-  up there; the brief ramp avoids that while still reading as a snap.
+- **High Pass Sweep** (2/4/8/16-bar variants): highpass cutoff sweeps from
+  20Hz (neutral) up to 15kHz (peak — kept short of the full 20kHz, which
+  cut too much of the mix to still read as musical) over the clip's
+  duration, then ramps back to 20Hz in the final ~15ms so it doesn't leave
+  the next section filtered. A hard instant reset was considered and
+  rejected — an instantaneous filter-coefficient jump risks a click even
+  though the signal itself is already near-silent up there; the brief ramp
+  avoids that while still reading as a snap.
+
+  The rise isn't a plain exponential — `FX_CURVE_POWER` (currently 3)
+  reshapes it so most of the audible change happens in roughly the last
+  fifth of the sweep instead of spreading evenly, reading as a sudden kick
+  near the end rather than a steady climb. Scheduled as a chain of ~24
+  short `exponentialRampToValueAtTime` segments sampled off that shaped
+  curve, since the native API alone only produces a constant-ratio
+  (plain exponential) ramp.
 
 Known limitation, intentional for now: this is a **single global filter
 node**, not one instance per clip — the FX lane can't have overlapping

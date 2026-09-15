@@ -1086,6 +1086,12 @@
       } else {
         const prev = neighbors.filter(c => c.position + c.duration <= clip.position).sort((a, b) => b.position - a.position)[0];
         if (prev) maxDurBars = Math.max(MIN_DUR_BARS, (clip.position + clip.duration) - (prev.position + prev.duration));
+        // Also can't grow past bar 0 -- the right edge is fixed, so the
+        // largest achievable duration is that edge's distance from the
+        // timeline start. Without this, the live preview could show more
+        // growth than onUp can actually commit (it clamps position at 0),
+        // producing exactly the pop-on-release this handle fix is for.
+        maxDurBars = Math.min(maxDurBars, clip.position + clip.duration);
       }
     }
 
@@ -1098,14 +1104,21 @@
 
     function onMove(ev) {
       finalDx = pxToBars(ev.clientX - startX);
-      // The clip's start (its left edge) never moves for either handle —
-      // only its width does. Dragging the left handle further left grows
-      // the duration just like dragging the right handle further right
-      // does; it's simply the mirrored direction. What's "backward" about
-      // it is which part of the source stem gets revealed, not where the
-      // clip sits on the timeline. Snapped to whole bars live, so it
-      // notches into place as you drag rather than only on release.
-      el.style.width = barsToPx(previewDuration()) + "px";
+      const newDur = previewDuration();
+      el.style.width = barsToPx(newDur) + "px";
+      // Vocal/Beats: the clip's start (its left edge) never moves for
+      // either handle during the drag -- only its width does, and
+      // layout() reconciles position afterward. That's tied to which part
+      // of the real source stem gets revealed, not just where the clip
+      // sits on the timeline, so it's left as-is here.
+      // FX clips have no source buffer semantics, so there's nothing to
+      // preserve by waiting -- live-track the left edge too, so whichever
+      // handle you're dragging is the one that visibly moves and the other
+      // stays anchored throughout, instead of only snapping into place
+      // on release.
+      if (clip.track === "fx" && side === "left") {
+        el.style.left = barsToPx((clip.position + startDur) - newDur) + "px";
+      }
     }
     function cleanup() {
       try { el.releasePointerCapture(e.pointerId); } catch (err) {}
@@ -1430,8 +1443,14 @@
   // OfflineAudioContext is created for every export.
   let masterFilterNode = null;
   const FX_NEUTRAL_HZ = 20;   // effectively bypassed on a 2-pole highpass
-  const FX_PEAK_HZ = 20000;   // top of the audible range
+  const FX_PEAK_HZ = 15000;   // short of 20kHz -- the full sweep read as cutting too much to stay musical
   const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant coefficient jump (avoids a filter-transient click)
+  // >1 skews the rise curve later in time -- most of the audible frequency
+  // change happens in roughly the last fifth of the sweep instead of
+  // spreading evenly, so it reads as a sudden kick near the end rather than
+  // a steady climb. 1 would reproduce a plain exponential ramp.
+  const FX_CURVE_POWER = 3;
+  const FX_CURVE_SEGMENTS = 24; // exponentialRampToValueAtTime is only a pure exponential; chaining this many short ramps through the shaped curve approximates the power curve above
 
   function getMasterFilter(ctx) {
     if (!masterFilterNode || masterFilterNode.context !== ctx) {
@@ -1460,15 +1479,18 @@
   function highpassSweepValueAt(tSec, totalDurSec, riseDurSec) {
     if (tSec <= 0 || tSec >= totalDurSec) return FX_NEUTRAL_HZ;
     if (tSec <= riseDurSec) {
-      const frac = riseDurSec > 0 ? tSec / riseDurSec : 1;
-      return FX_NEUTRAL_HZ * Math.pow(FX_PEAK_HZ / FX_NEUTRAL_HZ, frac);
+      const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
+      const shapedFrac = Math.pow(linFrac, FX_CURVE_POWER); // stays low longer, then climbs fast near riseDurSec
+      return FX_NEUTRAL_HZ * Math.pow(FX_PEAK_HZ / FX_NEUTRAL_HZ, shapedFrac);
     }
+    // The reset tail is meant to read as a snap, not part of the musical
+    // curve, so it stays a plain (unshaped) exponential back to neutral.
     const fallDurSec = totalDurSec - riseDurSec;
     const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
     return FX_PEAK_HZ * Math.pow(FX_NEUTRAL_HZ / FX_PEAK_HZ, frac);
   }
 
-  // 20Hz -> 20kHz exponential rise over (almost) the whole clip, then a
+  // 20Hz -> FX_PEAK_HZ shaped rise over (almost) the whole clip, then a
   // brief exponential ramp back to 20Hz in the final FX_RESET_RAMP_SEC so
   // whatever plays after this clip isn't left filtered. offsetIntoClipSec
   // lets a clip that starts partway through (a seek landing inside it)
@@ -1481,7 +1503,15 @@
 
     p.setValueAtTime(startVal, at);
     if (offsetIntoClipSec < riseDurSec) {
-      p.exponentialRampToValueAtTime(FX_PEAK_HZ, at + (riseDurSec - offsetIntoClipSec));
+      // exponentialRampToValueAtTime alone only produces a plain (constant
+      // ratio-per-second) exponential -- chaining several shorter ramps
+      // through highpassSweepValueAt's shaped checkpoints approximates the
+      // sharper power curve instead, while still using only native ramp
+      // primitives (no setValueCurveAtTime).
+      for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
+        const segT = offsetIntoClipSec + (riseDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
+        p.exponentialRampToValueAtTime(highpassSweepValueAt(segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
+      }
     }
     const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
     p.exponentialRampToValueAtTime(FX_NEUTRAL_HZ, resetEndAt);
