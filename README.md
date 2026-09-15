@@ -60,7 +60,7 @@ each one gets its own throwaway `OfflineAudioContext`.)
 
 Three effect types exist so far:
 
-- **High Pass Sweep** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
+- **High Pass** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
   (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
   too much of the mix to still read as musical) over the clip's duration,
   then ramps back to 20Hz in the final ~15ms so it doesn't leave the next
@@ -68,7 +68,7 @@ Three effect types exist so far:
   instantaneous filter-coefficient jump risks a click even though the
   signal itself is already near-silent up there; the brief ramp avoids
   that while still reading as a snap.
-- **Low Pass Sweep** (2/4/8/16-bar variants): the mirror image — cutoff
+- **Low Pass** (2/4/8/16-bar variants): the mirror image — cutoff
   sweeps from 20kHz (neutral) down to 20Hz (the classic DJ "breakdown,"
   where going all the way to near-total muffling is the point, unlike high
   pass's pulled-back peak) then resets back up to 20kHz.
@@ -82,7 +82,7 @@ Three effect types exist so far:
   only produces a constant-ratio (plain exponential) ramp. Both effects
   share this same scheduling code (`scheduleFxSweep`) parameterized by
   `fromHz`/`toHz`/`curvePower` off the `FX_EFFECTS` entry.
-- **Phaser Sweep** (2/4/8/16-bar variants): Web Audio has no native phaser
+- **Phaser** (2/4/8/16-bar variants): Web Audio has no native phaser
   node, so it's built from primitives — 6 series `allpass` `BiquadFilterNode`s
   (`stages`), all modulated in phase by one shared LFO (a 0.3Hz sine
   oscillator, `lfoRateHz`, fanned out to every stage's frequency param at
@@ -98,7 +98,7 @@ Three effect types exist so far:
   LFO rate (not tied to clip length), no feedback/resonance path, and the
   curve controls only dry/wet — allpass center frequency (800Hz) and LFO
   depth (±600Hz) are constants for now, not curve-controlled.
-- **Washout Sweep** (2/4/8/16-bar variants): a synthetic-impulse reverb
+- **Washout** (2/4/8/16-bar variants): a synthetic-impulse reverb
   wash (`reverbImpulseBuffer` — 2.5s of exponentially-decaying stereo white
   noise through a `ConvolverNode`, since there's no impulse-response audio
   asset to load) crossfaded in the same way as the phaser's dry/wet, with
@@ -119,6 +119,44 @@ Three effect types exist so far:
 The stacking/layering system this all runs on (`.layer`, `fxSlotFor`,
 `allocateTopFxLayer`, `swapFxLayer`, the vertical-drag gesture) is
 documented above, in the FX lane paragraphs.
+
+### Custom curves
+
+Tapping an FX clip opens the shared inspector (same one Vocal/Beats
+clips use), which for an FX clip shows a curve editor instead of the
+volume row: a single cubic bezier segment with two draggable handles,
+endpoints fixed at (0,0) and (1,1). That's the anchoring guardrail — the
+user can bend the path into almost any shape, but can't unlock the start
+or end away from neutral, which is exactly what would let an effect leave
+the next section subtly (or not so subtly) mis-filtered. The reset tail
+(the brief snap back to neutral at the very end of the clip, described
+above) sits *after* this curve and isn't user-editable at all, for the
+same reason.
+
+The data model stays deliberately thin: `clip.curve`, when present, is
+just `{p1x, p1y, p2x, p2y}` — the two handle positions. `fxCurveFracAt`
+is the single point where the FX engine decides between that and the
+procedural default (`Math.pow(linFrac, curvePower)`); both
+`fxExpShapedValueAt` and `fxLinearShapedValueAt` call it, so a custom
+curve automatically applies wherever the default curve already did —
+including a washout's two simultaneously-curved parameters (dry/wet and
+its companion highpass), which both read the same `clip.curve`. Bezier
+evaluation (`cubicBezierY`) uses the same Newton-Raphson solve-then-evaluate
+technique browsers use internally for CSS's `cubic-bezier()` timing
+functions, constraining handle x to `[0,1]` so the curve stays a
+well-defined function of time (no folding back on itself).
+
+Opening the inspector on a clip with no custom curve just *previews* the
+default shape approximated as bezier handles (`fxDefaultCurveHandles`) —
+looking at a clip never silently converts it. `clip.curve` is only
+actually created the moment a handle is first dragged, and the editor's
+own Reset button (`fxCurveReset`) deletes it again, reverting to the
+procedural default. Both go through the normal undo/redo history like any
+other clip edit.
+
+Delete already worked for FX clips before this (the inspector's shared
+duplicate/delete icons are generic across all three lanes) — it just
+wasn't obvious it was there, which is why this section exists at all.
 
 # Tuttii Mini Editor
 

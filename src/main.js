@@ -233,14 +233,14 @@
   //  - "echo": a feedback delay (fixed delaySec/feedback) crossfaded in via
   //    the same dry/wet curve as phaser/washout (fromWet/toWet).
   const FX_EFFECTS = [
-    { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16],
+    { id: "highpass", label: "High Pass", icon: "📈", durationsBars: [2, 4, 8, 16],
       kind: "filter", filterType: "highpass", fromHz: 20, toHz: 15000, curvePower: 3 },
-    { id: "lowpass-sweep", label: "Low Pass Sweep", icon: "📉", durationsBars: [2, 4, 8, 16],
+    { id: "lowpass", label: "Low Pass", icon: "📉", durationsBars: [2, 4, 8, 16],
       kind: "filter", filterType: "lowpass", fromHz: 20000, toHz: 20, curvePower: 3 },
-    { id: "phaser-sweep", label: "Phaser Sweep", icon: "🌀", durationsBars: [2, 4, 8, 16],
+    { id: "phaser", label: "Phaser", icon: "🌀", durationsBars: [2, 4, 8, 16],
       kind: "phaser", stages: 6, centerHz: 800, lfoRateHz: 0.3, lfoDepthHz: 600,
       fromWet: 0, toWet: 1, curvePower: 3 },
-    { id: "washout-sweep", label: "Washout Sweep", icon: "🌊", durationsBars: [2, 4, 8, 16],
+    { id: "washout", label: "Washout", icon: "🌊", durationsBars: [2, 4, 8, 16],
       kind: "washout", fromHz: 20, toHz: 300, fromWet: 0, toWet: 1, curvePower: 3 },
     { id: "echo-throw", label: "Echo Throw", icon: "🔁", durationsBars: [2, 4, 8, 16],
       kind: "echo", delaySec: BAR_SECONDS / 8, feedback: 0.45, fromWet: 0, toWet: 1, curvePower: 3 },
@@ -323,6 +323,13 @@
   const deleteClipBtn = document.getElementById("deleteClip");
   const volSlider = document.getElementById("volSlider");
   const volVal = document.getElementById("volVal");
+  const fxCurveSvg = document.getElementById("fxCurveSvg");
+  const fxCurvePath = document.getElementById("fxCurvePath");
+  const fxGuide1 = document.getElementById("fxGuide1");
+  const fxGuide2 = document.getElementById("fxGuide2");
+  const fxHandle1 = document.getElementById("fxHandle1");
+  const fxHandle2 = document.getElementById("fxHandle2");
+  const fxCurveReset = document.getElementById("fxCurveReset");
   const songLibrary = document.getElementById("songLibrary");
   const libraryTabs = document.getElementById("libraryTabs");
   const exportWavBtn = document.getElementById("exportWavBtn");
@@ -1295,6 +1302,7 @@
     volVal.textContent = Math.round(clip.volume * 100) + "%";
     updateVolSliderFill();
     inspector.classList.toggle("fx-clip", clip.track === "fx");
+    if (clip.track === "fx") renderFxCurveEditor(clip);
     inspector.classList.add("show");
   }
 
@@ -1305,6 +1313,79 @@
     const pct = Number(volSlider.value);
     volSlider.style.background = `linear-gradient(to right, var(--pink) ${pct}%, var(--border) ${pct}%)`;
   }
+
+  // ---------- FX curve editor ----------
+  const FX_CURVE_W = 200, FX_CURVE_H = 120; // matches fxCurveSvg's viewBox
+  function curveToSvg(x, y) { return { x: x * FX_CURVE_W, y: FX_CURVE_H - y * FX_CURVE_H }; } // y flips: curve-space grows up, SVG grows down
+  function svgToCurve(x, y) {
+    return {
+      x: Math.min(1, Math.max(0, x / FX_CURVE_W)),
+      y: Math.min(1, Math.max(0, 1 - y / FX_CURVE_H)),
+    };
+  }
+
+  function drawFxCurve(handles) {
+    const p1 = curveToSvg(handles.p1x, handles.p1y);
+    const p2 = curveToSvg(handles.p2x, handles.p2y);
+    fxCurvePath.setAttribute("d", `M 0 ${FX_CURVE_H} C ${p1.x} ${p1.y}, ${p2.x} ${p2.y}, ${FX_CURVE_W} 0`);
+    fxGuide1.setAttribute("x2", p1.x); fxGuide1.setAttribute("y2", p1.y);
+    fxGuide2.setAttribute("x2", p2.x); fxGuide2.setAttribute("y2", p2.y);
+    fxHandle1.setAttribute("cx", p1.x); fxHandle1.setAttribute("cy", p1.y);
+    fxHandle2.setAttribute("cx", p2.x); fxHandle2.setAttribute("cy", p2.y);
+  }
+
+  function renderFxCurveEditor(clip) {
+    drawFxCurve(clip.curve || fxDefaultCurveHandles());
+  }
+
+  function svgPointFromEvent(ev) {
+    const rect = fxCurveSvg.getBoundingClientRect();
+    return {
+      x: (ev.clientX - rect.left) / rect.width * FX_CURVE_W,
+      y: (ev.clientY - rect.top) / rect.height * FX_CURVE_H,
+    };
+  }
+
+  // Dragging a handle is what actually "commits" a clip to a custom curve
+  // -- opening the inspector on a clip that has none just previews the
+  // default shape (via renderFxCurveEditor above) without writing
+  // anything, so merely looking at a clip never silently converts it.
+  function startFxHandleDrag(e, which) {
+    e.preventDefault();
+    const pointerId = e.pointerId;
+    const clip = findClip(selectedUid);
+    if (!clip) return;
+    if (!clip.curve) clip.curve = fxDefaultCurveHandles();
+
+    function onMove(ev) {
+      if (ev.pointerId !== pointerId) return;
+      const svgPt = svgPointFromEvent(ev);
+      const curvePt = svgToCurve(svgPt.x, svgPt.y);
+      if (which === 1) { clip.curve.p1x = curvePt.x; clip.curve.p1y = curvePt.y; }
+      else { clip.curve.p2x = curvePt.x; clip.curve.p2y = curvePt.y; }
+      drawFxCurve(clip.curve);
+    }
+    function onUp(ev) {
+      if (ev.pointerId !== pointerId) return;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      commitHistory();
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  }
+  fxHandle1.addEventListener("pointerdown", (e) => startFxHandleDrag(e, 1));
+  fxHandle2.addEventListener("pointerdown", (e) => startFxHandleDrag(e, 2));
+
+  fxCurveReset.addEventListener("click", () => {
+    const clip = findClip(selectedUid);
+    if (!clip) return;
+    delete clip.curve;
+    drawFxCurve(fxDefaultCurveHandles());
+    commitHistory();
+  });
 
   closeInsp.addEventListener("click", () => {
     selectedUid = null;
@@ -1581,6 +1662,64 @@
   const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant discontinuity (avoids a click)
   const FX_CURVE_SEGMENTS = 24; // exponential/linearRampToValueAtTime alone are each only a straight curve; chaining this many short ramps through shaped checkpoints approximates the power curve below
 
+  // ---------- FX custom curves ----------
+  // A clip's rise-phase shape (0..1 in, 0..1 out) is either the default
+  // procedural power curve, or -- once a user drags a handle in the curve
+  // editor -- a cubic bezier the user has shaped by hand. clip.curve, when
+  // present, is {p1x, p1y, p2x, p2y}: the two draggable control-point
+  // handles of a single bezier segment whose endpoints are fixed at (0,0)
+  // and (1,1). Those endpoints are exactly the "start and end always
+  // anchored" guardrail -- the user can bend the path between them into
+  // almost anything, but can't unlock the ends into a shape that leaves
+  // the effect not fully reset, which is what the reset tail (handled
+  // separately, above/below) exists to prevent in the first place.
+  // p1x/p2x are kept in [0,1] (same constraint CSS's own cubic-bezier()
+  // timing functions use) so x(u) is monotonic and solvable; p1y/p2y are
+  // also kept in [0,1] for v1 -- no overshoot past the endpoints yet.
+  function fxDefaultCurveHandles() {
+    // Approximates the current curvePower=3 default (stays low, then
+    // rushes near the end) as a starting point for the editor -- not an
+    // exact match, just a reasonable place to start dragging from.
+    return { p1x: 0.6, p1y: 0.05, p2x: 0.9, p2y: 0.3 };
+  }
+
+  function bezierComponent(t, p1, p2) {
+    const c = 3 * p1;
+    const b = 3 * (p2 - p1) - c;
+    const a = 1 - c - b;
+    return ((a * t + b) * t + c) * t;
+  }
+  function bezierComponentDerivative(t, p1, p2) {
+    const c = 3 * p1;
+    const b = 3 * (p2 - p1) - c;
+    const a = 1 - c - b;
+    return (3 * a * t + 2 * b) * t + c;
+  }
+  // Standard cubic-bezier-as-timing-function solve: x(u) is monotonic
+  // given p1x/p2x in [0,1], so Newton-Raphson converges quickly to the u
+  // whose x-component equals the requested x, then evaluates y at that u.
+  // Same technique browsers use for CSS's cubic-bezier() easing functions.
+  function cubicBezierY(p1x, p1y, p2x, p2y, x) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const dx = bezierComponent(t, p1x, p2x) - x;
+      const slope = bezierComponentDerivative(t, p1x, p2x);
+      if (Math.abs(slope) < 1e-6) break;
+      t -= dx / slope;
+    }
+    t = Math.min(1, Math.max(0, t));
+    return bezierComponent(t, p1y, p2y);
+  }
+  // The single point where a custom curve (if any) actually takes over
+  // from the procedural default -- everywhere else in the FX engine goes
+  // through fxExpShapedValueAt/fxLinearShapedValueAt, which both call this.
+  function fxCurveFracAt(clip, cfg, linFrac) {
+    if (clip.curve) return cubicBezierY(clip.curve.p1x, clip.curve.p1y, clip.curve.p2x, clip.curve.p2y, linFrac);
+    return Math.pow(linFrac, cfg.curvePower);
+  }
+
   // Exponential interpolation matching exactly how exponentialRampToValueAtTime
   // itself interpolates, so a value computed here for a given clip-relative
   // time lines up with where the real ramp would actually be at that instant.
@@ -1590,35 +1729,36 @@
   // pass) since it's just exponential interpolation between two positive
   // values -- appropriate for frequency, which is a log-domain quantity
   // (see fxLinearShapedValueAt for a proportion like dry/wet instead).
-  function fxExpShapedValueAt(cfg, tSec, totalDurSec, riseDurSec) {
+  function fxExpShapedValueAt(clip, cfg, tSec, totalDurSec, riseDurSec) {
     if (tSec <= 0 || tSec >= totalDurSec) return cfg.fromHz;
     if (tSec <= riseDurSec) {
       const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
-      const shapedFrac = Math.pow(linFrac, cfg.curvePower); // stays near fromHz longer, then races toward toHz near riseDurSec
+      const shapedFrac = fxCurveFracAt(clip, cfg, linFrac); // stays near fromHz longer, then races toward toHz near riseDurSec (or whatever shape the user drew)
       return cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, shapedFrac);
     }
     // The reset tail is meant to read as a snap, not part of the musical
-    // curve, so it stays a plain (unshaped) exponential back to fromHz.
+    // curve (and not user-editable -- see fxCurveFracAt), so it stays a
+    // plain exponential back to fromHz regardless of any custom curve.
     const fallDurSec = totalDurSec - riseDurSec;
     const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
     return cfg.toHz * Math.pow(cfg.fromHz / cfg.toHz, frac);
   }
 
-  // Same shape (slow start, sudden change near the end; snap back at the
-  // very end), but LINEAR interpolation of the shaped fraction rather than
-  // exponential -- correct for a proportion like dry/wet (0..1), which has
-  // no meaningful "ratio," and which exponentialRampToValueAtTime can't
-  // even reach (it rejects 0 as an endpoint; a phaser needs to be able to
-  // start and end fully dry).
-  function fxLinearShapedValueAt(from, to, curvePower, tSec, totalDurSec, riseDurSec) {
-    if (tSec <= 0 || tSec >= totalDurSec) return from;
+  // Same shape (slow start, sudden change near the end, or whatever the
+  // user drew; snap back at the very end), but LINEAR interpolation of the
+  // shaped fraction rather than exponential -- correct for a proportion
+  // like dry/wet (0..1), which has no meaningful "ratio," and which
+  // exponentialRampToValueAtTime can't even reach (it rejects 0 as an
+  // endpoint; a phaser needs to be able to start and end fully dry).
+  function fxLinearShapedValueAt(clip, cfg, tSec, totalDurSec, riseDurSec) {
+    if (tSec <= 0 || tSec >= totalDurSec) return cfg.fromWet;
     if (tSec <= riseDurSec) {
       const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
-      return from + (to - from) * Math.pow(linFrac, curvePower);
+      return cfg.fromWet + (cfg.toWet - cfg.fromWet) * fxCurveFracAt(clip, cfg, linFrac);
     }
     const fallDurSec = totalDurSec - riseDurSec;
     const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
-    return to + (from - to) * frac;
+    return cfg.toWet + (cfg.fromWet - cfg.toWet) * frac;
   }
 
   // fromHz -> toHz shaped sweep over (almost) the whole clip, then a brief
@@ -1629,14 +1769,14 @@
   function scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
     const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
-    const startVal = fxExpShapedValueAt(cfg, offsetIntoClipSec, totalDurSec, riseDurSec);
+    const startVal = fxExpShapedValueAt(clip, cfg, offsetIntoClipSec, totalDurSec, riseDurSec);
     const p = node.frequency;
 
     p.setValueAtTime(startVal, at);
     if (offsetIntoClipSec < riseDurSec) {
       for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
         const segT = offsetIntoClipSec + (riseDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
-        p.exponentialRampToValueAtTime(fxExpShapedValueAt(cfg, segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
+        p.exponentialRampToValueAtTime(fxExpShapedValueAt(clip, cfg, segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
       }
     }
     const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
@@ -1650,7 +1790,7 @@
   function schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
     const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
-    const wetAt = (t) => fxLinearShapedValueAt(cfg.fromWet, cfg.toWet, cfg.curvePower, t, totalDurSec, riseDurSec);
+    const wetAt = (t) => fxLinearShapedValueAt(clip, cfg, t, totalDurSec, riseDurSec);
 
     const startWet = wetAt(offsetIntoClipSec);
     wetGain.gain.setValueAtTime(startWet, at);
