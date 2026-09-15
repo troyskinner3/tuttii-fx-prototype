@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tuttii — Try the Editor</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23E84BC6'/%3E%3Cstop offset='1' stop-color='%23A055D5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='%230B0716'/%3E%3Ccircle cx='16' cy='16' r='10' fill='url(%23g)'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="./src/style.css" />
+<script>
+  // Set before first paint (not in main.js, which runs after parsing) so an
+  // embedded page never flashes the standalone fixed-height shell first.
+  if (window.self !== window.top) document.documentElement.classList.add("embedded");
+</script>
+</head>
+<body>
+
+<div class="app">
+
+  <div class="app-top">
+
+  <div class="header">
+    <div class="title-row">
+      <span class="pencil">✎</span>
+      <input class="title-input" id="titleInput" value="My demo mashup" />
+    </div>
+    <div class="export-group">
+      <span class="export-caption">Export</span>
+      <div class="export-buttons">
+        <button class="export-btn" id="exportWavBtn">WAV</button>
+        <button class="export-btn" id="exportMp3Btn">MP3</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toolbar-row">
+    <div class="toolbar-pill locked">BPM <b>120</b> <svg class="pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M7 10l5 5 5-5"/></svg></div>
+    <div class="toolbar-pill locked">KEY <b>G# <span class="key-qual">maj</span></b> <svg class="pill-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M7 10l5 5 5-5"/></svg></div>
+    <div class="icon-circle" id="undoBtn" title="Undo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 016 6v1"/></svg>
+    </div>
+    <div class="icon-circle" id="redoBtn" title="Redo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 00-6 6v1"/></svg>
+    </div>
+    <div class="icon-circle" id="resetBtn" title="Reset arrangement">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 16v-4h4"/></svg>
+    </div>
+  </div>
+  <p class="lock-caption">Locked for demo — download Tuttii to edit key and BPM.</p>
+
+  <div class="timeline-wrap">
+    <div class="time-header">
+      <div class="time-readout"><span class="cur" id="timeCur">0:00</span> <span class="sep">/</span> <span id="timeTotal">0:00</span></div>
+      <div class="grabber"></div>
+      <div class="zoom-controls">
+        <button class="zoom-btn" id="zoomOutBtn" title="Zoom out">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/></svg>
+        </button>
+        <button class="zoom-btn" id="zoomInBtn" title="Zoom in">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="scroll-area" id="scrollArea">
+      <div class="scroll-inner" id="scrollInner">
+        <div class="row" id="vocalRow">
+          <div class="row-label vocal">
+            <span class="icon">🎤</span><span>Vocal</span>
+          </div>
+          <div class="row-lane" id="vocalLane" data-track="vocal">
+            <div class="empty-state" id="vocalEmpty"></div>
+          </div>
+        </div>
+        <div class="row" id="beatsRow">
+          <div class="row-label beats">
+            <span class="icon">🥁</span><span>Beats</span>
+          </div>
+          <div class="row-lane beats" id="beatsLane" data-track="beats">
+            <div class="empty-state" id="beatsEmpty"></div>
+          </div>
+        </div>
+        <div class="scrub-row">
+          <div class="scrub-label">Scrub</div>
+          <div class="scrub-lane" id="scrubLane"></div>
+        </div>
+        <div class="playhead" id="playhead" style="left:0;"></div>
+      </div>
+    </div>
+
+    <div class="transport">
+      <button class="side-btn" id="skipStartBtn" title="Jump to start">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l10 6V6z"/></svg>
+      </button>
+      <button class="side-btn" id="rewindBtn" title="Back 1 bar">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 12l9-6v12z"/><path d="M2 12l9-6v12z"/></svg>
+      </button>
+      <button class="play-btn" id="playBtn">
+        <svg id="playIcon" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="side-btn" id="fastFwdBtn" title="Forward 1 bar">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M13 12l-9-6v12z"/><path d="M22 12l-9-6v12z"/></svg>
+      </button>
+      <button class="side-btn locate-btn" id="locateBtn" title="Center on playhead">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
+
+  </div>
+
+  <div class="inspector" id="inspector">
+    <div class="inspector-head">
+      <div class="insp-bar">
+        <span class="insp-eyebrow">Clip</span>
+        <div class="insp-actions">
+          <button class="insp-icon-btn" id="duplicateClip" title="Duplicate">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>
+          </button>
+          <span class="insp-divider"></span>
+          <button class="insp-icon-btn delete" id="deleteClip" title="Delete">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <button class="insp-close" id="closeInsp" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="vol-row">
+      <svg class="vol-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <input type="range" id="volSlider" min="0" max="100" value="100" />
+      <span class="vol-val" id="volVal">100%</span>
+    </div>
+    <p class="hint">Drag the middle to move it. Drag either edge to trim — pull past the section's original end to extend it.</p>
+  </div>
+
+  <div class="app-scroll">
+
+  <div class="library">
+    <div class="library-tabs" id="libraryTabs">
+      <button class="lib-tab active" data-tab="songs">Songs</button>
+      <button class="lib-tab" data-tab="vocals">Vocals</button>
+      <button class="lib-tab" data-tab="inst">Inst</button>
+      <button class="lib-tab" data-tab="silence">Silence</button>
+    </div>
+    <div id="songLibrary"></div>
+  </div>
+
+  <div class="cta">
+    <p>Want to do this with your own music instead of ours?</p>
+    <a href="https://tuttii.app/#beta-signup" id="ctaLink" target="_blank" rel="noopener noreferrer">Get Tuttii →</a>
+  </div>
+
+  </div>
+
+  <div id="errBanner" style="display:none; position:fixed; left:12px; right:12px; bottom:12px; background:#3a0d1e; border:1px solid #ff7a9c; color:#ffd6e2; font-size:11.5px; padding:10px 12px; border-radius:12px; z-index:9999; line-height:1.5;"></div>
+
+</div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
