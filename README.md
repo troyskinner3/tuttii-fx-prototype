@@ -98,6 +98,23 @@ Three effect types exist so far:
   LFO rate (not tied to clip length), no feedback/resonance path, and the
   curve controls only dry/wet — allpass center frequency (800Hz) and LFO
   depth (±600Hz) are constants for now, not curve-controlled.
+- **Washout Sweep** (2/4/8/16-bar variants): a synthetic-impulse reverb
+  wash (`reverbImpulseBuffer` — 2.5s of exponentially-decaying stereo white
+  noise through a `ConvolverNode`, since there's no impulse-response audio
+  asset to load) crossfaded in the same way as the phaser's dry/wet, with
+  the combined dry+wet signal also passing through a highpass that rises
+  from 20Hz to 300Hz over the same envelope — a mild thinning of the low
+  end, not the dramatic full-range sweep of the standalone High Pass
+  effect. Both curves reuse the existing scheduling functions unmodified
+  (`schedulePhaserSweep` for the crossfade, `scheduleFxSweep` for the
+  filter) rather than inventing new curve math, since each just reads the
+  `FX_EFFECTS` fields it already knows about (`fromWet`/`toWet` and
+  `fromHz`/`toHz` coexist on the same entry).
+- **Echo Throw** (2/4/8/16-bar variants): a feedback delay — one
+  `DelayNode` set to an eighth note at the locked 120bpm (`delaySec`,
+  fixed, not curve-controlled) with a 45% feedback loop, crossfaded in via
+  the same dry/wet curve as phaser/washout. The longer a passage sits
+  under this effect, the more the repeats dominate over the dry signal.
 
 The stacking/layering system this all runs on (`.layer`, `fxSlotFor`,
 `allocateTopFxLayer`, `swapFxLayer`, the vertical-drag gesture) is

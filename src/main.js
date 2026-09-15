@@ -226,6 +226,12 @@
   //    buildFxUnit); fromWet/toWet describe the crossfade curve the same
   //    way fromHz/toHz do for a filter. centerHz/lfoRateHz/lfoDepthHz/stages
   //    are fixed characteristics of the effect for now, not curve-controlled.
+  //  - "washout": a synthetic-impulse reverb (dry/wet, fromWet/toWet) whose
+  //    combined output also passes through a highpass (fromHz/toHz) -- both
+  //    curves driven by the same envelope, reusing schedulePhaserSweep and
+  //    scheduleFxSweep unmodified rather than inventing new curve math.
+  //  - "echo": a feedback delay (fixed delaySec/feedback) crossfaded in via
+  //    the same dry/wet curve as phaser/washout (fromWet/toWet).
   const FX_EFFECTS = [
     { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16],
       kind: "filter", filterType: "highpass", fromHz: 20, toHz: 15000, curvePower: 3 },
@@ -234,6 +240,10 @@
     { id: "phaser-sweep", label: "Phaser Sweep", icon: "🌀", durationsBars: [2, 4, 8, 16],
       kind: "phaser", stages: 6, centerHz: 800, lfoRateHz: 0.3, lfoDepthHz: 600,
       fromWet: 0, toWet: 1, curvePower: 3 },
+    { id: "washout-sweep", label: "Washout Sweep", icon: "🌊", durationsBars: [2, 4, 8, 16],
+      kind: "washout", fromHz: 20, toHz: 300, fromWet: 0, toWet: 1, curvePower: 3 },
+    { id: "echo-throw", label: "Echo Throw", icon: "🔁", durationsBars: [2, 4, 8, 16],
+      kind: "echo", delaySec: BAR_SECONDS / 8, feedback: 0.45, fromWet: 0, toWet: 1, curvePower: 3 },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
 
@@ -1529,6 +1539,26 @@
     return buf;
   }
 
+  // Synthetic reverb impulse response (no IR audio asset to load): stereo
+  // white noise shaped with an exponential decay envelope, same idea as
+  // noiseBuffer() above but longer and decaying rather than a short
+  // percussive burst. Good enough for a "wash," not aiming for a
+  // convincing hall/plate emulation.
+  let reverbImpulseCache = null;
+  function reverbImpulseBuffer(ctx) {
+    if (reverbImpulseCache && reverbImpulseCache.ctx === ctx) return reverbImpulseCache.buf;
+    const durationSec = 2.5;
+    const decay = 3;
+    const len = Math.floor(ctx.sampleRate * durationSec);
+    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    reverbImpulseCache = { ctx, buf };
+    return buf;
+  }
+
   // ---------- FX audio engine ----------
   // Each FX clip gets its own dedicated audio "unit" (built fresh every
   // play()/export call -- see buildFxChain), chained in series ordered by
@@ -1677,6 +1707,62 @@
       lfo.connect(lfoDepth);
       allpasses.forEach(ap => lfoDepth.connect(ap.frequency));
       lfo.start();
+
+      return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
+    }
+    if (cfg.kind === "washout") {
+      // input -> dryGain -----------------\
+      //       -> convolver -> wetGain ----- +--> highpass -> output
+      // Dry/wet and the highpass cutoff are automated by the same shaped
+      // envelope, so this just calls both existing scheduling functions
+      // (each reads only the cfg fields it cares about) rather than
+      // needing new curve math.
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      const convolver = track(ctx.createConvolver());
+      convolver.buffer = reverbImpulseBuffer(ctx);
+      convolver.normalize = true;
+      const filter = track(ctx.createBiquadFilter());
+      filter.type = "highpass";
+      filter.frequency.value = cfg.fromHz;
+
+      input.connect(dryGain).connect(filter);
+      input.connect(convolver).connect(wetGain).connect(filter);
+      filter.connect(output);
+
+      return {
+        clip, input, output,
+        automate: (at, offset) => {
+          schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset);
+          scheduleFxSweep(filter, cfg, clip, at, offset || 0);
+        },
+      };
+    }
+    if (cfg.kind === "echo") {
+      // input -> dryGain -----------------\
+      //       -> delay (with feedback) ---- +--> output
+      // Delay time and feedback are fixed (no curve control yet, per
+      // "start simple") -- only the dry/wet balance ramps in, so a longer
+      // hold on the effect means the repeats increasingly dominate.
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      const delay = track(ctx.createDelay(1));
+      delay.delayTime.value = cfg.delaySec;
+      const feedback = track(ctx.createGain());
+      feedback.gain.value = cfg.feedback;
+
+      input.connect(dryGain).connect(output);
+      input.connect(delay);
+      delay.connect(feedback).connect(delay);
+      delay.connect(wetGain).connect(output);
 
       return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
     }
