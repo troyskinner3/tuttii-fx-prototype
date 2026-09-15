@@ -218,18 +218,22 @@
   // ---------- FX ----------
   // One row per effect type in the library (tap-to-expand, same pattern as
   // Songs); durationsBars are the preset lengths offered as draggable
-  // chips. filterType/fromHz/toHz/curvePower describe the BiquadFilterNode
-  // automation curve for that effect -- fromHz doubles as its neutral/reset
-  // value, since every sweep here starts at rest and returns there at the
-  // end. Both current effects share the same node type (BiquadFilterNode)
-  // and curve shape, just mirrored; a future effect needing a different
-  // kind of node (e.g. a phaser's allpass network) would branch inside
-  // buildFxNode/scheduleFxClip on effectId rather than reusing these fields.
+  // chips. `kind` selects which shape buildFxUnit builds:
+  //  - "filter" (default, no kind needed): one BiquadFilterNode, its cutoff
+  //    swept fromHz -> toHz. fromHz doubles as neutral/reset, since every
+  //    sweep here starts at rest and returns there at the end.
+  //  - "phaser": an allpass chain + shared LFO + dry/wet crossfade (see
+  //    buildFxUnit); fromWet/toWet describe the crossfade curve the same
+  //    way fromHz/toHz do for a filter. centerHz/lfoRateHz/lfoDepthHz/stages
+  //    are fixed characteristics of the effect for now, not curve-controlled.
   const FX_EFFECTS = [
     { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16],
-      filterType: "highpass", fromHz: 20, toHz: 15000, curvePower: 3 },
+      kind: "filter", filterType: "highpass", fromHz: 20, toHz: 15000, curvePower: 3 },
     { id: "lowpass-sweep", label: "Low Pass Sweep", icon: "📉", durationsBars: [2, 4, 8, 16],
-      filterType: "lowpass", fromHz: 20000, toHz: 20, curvePower: 3 },
+      kind: "filter", filterType: "lowpass", fromHz: 20000, toHz: 20, curvePower: 3 },
+    { id: "phaser-sweep", label: "Phaser Sweep", icon: "🌀", durationsBars: [2, 4, 8, 16],
+      kind: "phaser", stages: 6, centerHz: 800, lfoRateHz: 0.3, lfoDepthHz: 600,
+      fromWet: 0, toWet: 1, curvePower: 3 },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
 
@@ -1526,18 +1530,26 @@
   }
 
   // ---------- FX audio engine ----------
-  // Each FX clip gets its own dedicated BiquadFilterNode instance (built
-  // fresh every play()/export call -- see buildFxChain), chained in series
-  // ordered by .layer: master mix -> lowest-layer clip's node -> ... ->
-  // highest-layer's node -> destination. A node is only ever non-neutral
-  // during its own clip's window, so simply keeping every FX clip's node
-  // permanently in the chain for the whole run is enough to get correct
-  // layering for free -- two overlapping clips both apply during their
-  // shared window, with no dynamic connect/disconnect scheduling needed.
-  // Fresh nodes every run also means there's nothing to reset between
-  // plays (no stale automation from a previous run to cancel).
-  const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant coefficient jump (avoids a filter-transient click)
-  const FX_CURVE_SEGMENTS = 24; // exponentialRampToValueAtTime is only a pure exponential; chaining this many short ramps through the shaped curve approximates the power curve below
+  // Each FX clip gets its own dedicated audio "unit" (built fresh every
+  // play()/export call -- see buildFxChain), chained in series ordered by
+  // .layer: master mix -> lowest-layer clip's unit -> ... -> highest-layer's
+  // unit -> destination. A unit is only ever non-neutral during its own
+  // clip's window, so simply keeping every FX clip's unit permanently in
+  // the chain for the whole run is enough to get correct layering for free
+  // -- two overlapping clips both apply during their shared window, with no
+  // dynamic connect/disconnect scheduling needed. Fresh units every run
+  // also means there's nothing to reset between plays -- except any live
+  // oscillators (a phaser's LFO): those keep running until explicitly
+  // stopped, so the previous run's units are torn down before building a
+  // new one (see liveFxChainNodes) rather than just left to accumulate.
+  //
+  // A unit is `{clip, input, output, automate(at, offsetIntoClipSec)}`.
+  // For a simple filter sweep, input and output are the same node (one
+  // BiquadFilterNode doubles as both). A phaser needs several internal
+  // nodes (an allpass chain, a shared LFO, a dry/wet crossfade), so it
+  // exposes its own external input/output gain nodes instead.
+  const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant discontinuity (avoids a click)
+  const FX_CURVE_SEGMENTS = 24; // exponential/linearRampToValueAtTime alone are each only a straight curve; chaining this many short ramps through shaped checkpoints approximates the power curve below
 
   // Exponential interpolation matching exactly how exponentialRampToValueAtTime
   // itself interpolates, so a value computed here for a given clip-relative
@@ -1545,8 +1557,10 @@
   // That's what lets playback pick up mid-sweep (e.g. after a seek lands
   // inside an FX clip) without an audible jump. Works for either sweep
   // direction (fromHz > toHz, as in high pass, or the reverse, as in low
-  // pass) since it's just exponential interpolation between two positive values.
-  function fxSweepValueAt(cfg, tSec, totalDurSec, riseDurSec) {
+  // pass) since it's just exponential interpolation between two positive
+  // values -- appropriate for frequency, which is a log-domain quantity
+  // (see fxLinearShapedValueAt for a proportion like dry/wet instead).
+  function fxExpShapedValueAt(cfg, tSec, totalDurSec, riseDurSec) {
     if (tSec <= 0 || tSec >= totalDurSec) return cfg.fromHz;
     if (tSec <= riseDurSec) {
       const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
@@ -1560,6 +1574,23 @@
     return cfg.toHz * Math.pow(cfg.fromHz / cfg.toHz, frac);
   }
 
+  // Same shape (slow start, sudden change near the end; snap back at the
+  // very end), but LINEAR interpolation of the shaped fraction rather than
+  // exponential -- correct for a proportion like dry/wet (0..1), which has
+  // no meaningful "ratio," and which exponentialRampToValueAtTime can't
+  // even reach (it rejects 0 as an endpoint; a phaser needs to be able to
+  // start and end fully dry).
+  function fxLinearShapedValueAt(from, to, curvePower, tSec, totalDurSec, riseDurSec) {
+    if (tSec <= 0 || tSec >= totalDurSec) return from;
+    if (tSec <= riseDurSec) {
+      const linFrac = riseDurSec > 0 ? tSec / riseDurSec : 1;
+      return from + (to - from) * Math.pow(linFrac, curvePower);
+    }
+    const fallDurSec = totalDurSec - riseDurSec;
+    const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
+    return to + (from - to) * frac;
+  }
+
   // fromHz -> toHz shaped sweep over (almost) the whole clip, then a brief
   // exponential ramp back to fromHz in the final FX_RESET_RAMP_SEC so
   // whatever plays after this clip isn't left filtered. offsetIntoClipSec
@@ -1568,46 +1599,123 @@
   function scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
     const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
-    const startVal = fxSweepValueAt(cfg, offsetIntoClipSec, totalDurSec, riseDurSec);
+    const startVal = fxExpShapedValueAt(cfg, offsetIntoClipSec, totalDurSec, riseDurSec);
     const p = node.frequency;
 
     p.setValueAtTime(startVal, at);
     if (offsetIntoClipSec < riseDurSec) {
-      // exponentialRampToValueAtTime alone only produces a plain (constant
-      // ratio-per-second) exponential -- chaining several shorter ramps
-      // through fxSweepValueAt's shaped checkpoints approximates the
-      // sharper power curve instead, while still using only native ramp
-      // primitives (no setValueCurveAtTime).
       for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
         const segT = offsetIntoClipSec + (riseDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
-        p.exponentialRampToValueAtTime(fxSweepValueAt(cfg, segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
+        p.exponentialRampToValueAtTime(fxExpShapedValueAt(cfg, segT, totalDurSec, riseDurSec), at + (segT - offsetIntoClipSec));
       }
     }
     const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
     p.exponentialRampToValueAtTime(cfg.fromHz, resetEndAt);
   }
 
-  function scheduleFxClip(node, clip, at, offsetIntoClipSec) {
-    const cfg = fxEffectFor(clip.effectId);
-    if (cfg) scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec || 0);
+  // fromWet -> toWet shaped crossfade (dryGain always kept as the
+  // complement, 1 - wet -- a simple linear crossfade, not equal-power; fine
+  // for a v1 proof of concept), same shape/reset-tail idea as the filter
+  // sweep above but linear, since 0 is a valid, needed endpoint here.
+  function schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offsetIntoClipSec) {
+    const totalDurSec = barsToSeconds(clip.duration);
+    const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
+    const wetAt = (t) => fxLinearShapedValueAt(cfg.fromWet, cfg.toWet, cfg.curvePower, t, totalDurSec, riseDurSec);
+
+    const startWet = wetAt(offsetIntoClipSec);
+    wetGain.gain.setValueAtTime(startWet, at);
+    dryGain.gain.setValueAtTime(1 - startWet, at);
+    if (offsetIntoClipSec < riseDurSec) {
+      for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
+        const segT = offsetIntoClipSec + (riseDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
+        const w = wetAt(segT);
+        const segAt = at + (segT - offsetIntoClipSec);
+        wetGain.gain.linearRampToValueAtTime(w, segAt);
+        dryGain.gain.linearRampToValueAtTime(1 - w, segAt);
+      }
+    }
+    const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
+    wetGain.gain.linearRampToValueAtTime(cfg.fromWet, resetEndAt);
+    dryGain.gain.linearRampToValueAtTime(1 - cfg.fromWet, resetEndAt);
   }
 
-  // Builds one filter node per FX clip currently on the timeline and wires
-  // them in series, ordered by .layer ascending (lowest layer = highest
-  // priority = first in the chain = visually topmost). Returns the ordered
-  // {clip, node} list; entries[0].node is where the Vocal/Beats mix should
-  // connect (or straight to ctx.destination when the list is empty).
-  function buildFxChain(ctx) {
-    const sorted = [...clips.fx].sort((a, b) => a.layer - b.layer);
-    const entries = sorted.map(clip => {
-      const cfg = fxEffectFor(clip.effectId);
-      const node = ctx.createBiquadFilter();
-      node.type = cfg.filterType;
-      node.frequency.value = cfg.fromHz;
-      return { clip, node };
+  // Builds one FX clip's audio unit. `track`, when provided, records every
+  // node created so a later teardown pass can disconnect (and stop, for
+  // anything with a lifecycle -- an LFO oscillator) everything this unit
+  // made; used for the live context only (see buildFxChain).
+  function buildFxUnit(ctx, clip, track) {
+    const cfg = fxEffectFor(clip.effectId);
+    if (cfg.kind === "phaser") {
+      // input -> dryGain -> output
+      //       -> allpass x stages (shared LFO modulates all of them in
+      //          phase, which is what creates the moving notches) -> wetGain -> output
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      input.connect(dryGain).connect(output);
+
+      let node = input;
+      const allpasses = [];
+      for (let i = 0; i < cfg.stages; i++) {
+        const ap = track(ctx.createBiquadFilter());
+        ap.type = "allpass";
+        ap.frequency.value = cfg.centerHz;
+        node.connect(ap);
+        node = ap;
+        allpasses.push(ap);
+      }
+      node.connect(wetGain).connect(output);
+
+      const lfo = track(ctx.createOscillator());
+      lfo.type = "sine";
+      lfo.frequency.value = cfg.lfoRateHz;
+      const lfoDepth = track(ctx.createGain());
+      lfoDepth.gain.value = cfg.lfoDepthHz;
+      lfo.connect(lfoDepth);
+      allpasses.forEach(ap => lfoDepth.connect(ap.frequency));
+      lfo.start();
+
+      return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
+    }
+    // Default: a filter sweep (high/low pass) -- one BiquadFilterNode is
+    // both the unit's input and its output.
+    const node = track(ctx.createBiquadFilter());
+    node.type = cfg.filterType;
+    node.frequency.value = cfg.fromHz;
+    return { clip, input: node, output: node, automate: (at, offset) => scheduleFxSweep(node, cfg, clip, at, offset || 0) };
+  }
+
+  // Every unit this session's live AudioContext has ever built, so the next
+  // play() (which rebuilds the whole chain fresh) can tear the old one down
+  // first -- otherwise a phaser's LFO oscillator would just keep running
+  // forever, one more per play(), since fresh units are never implicitly
+  // garbage-collected while still connected to the graph.
+  let liveFxChainNodes = [];
+  function teardownLiveFxChain() {
+    liveFxChainNodes.forEach(n => {
+      try { n.disconnect(); } catch (e) {}
+      try { if (n.stop) n.stop(); } catch (e) {}
     });
-    for (let i = 0; i < entries.length - 1; i++) entries[i].node.connect(entries[i + 1].node);
-    if (entries.length) entries[entries.length - 1].node.connect(ctx.destination);
+    liveFxChainNodes = [];
+  }
+
+  // Builds one unit per FX clip currently on the timeline and wires them in
+  // series, ordered by .layer ascending (lowest layer = highest priority =
+  // first in the chain = visually topmost). Returns the ordered list;
+  // entries[0].input is where the Vocal/Beats mix should connect (or
+  // straight to ctx.destination when the list is empty).
+  function buildFxChain(ctx) {
+    const isLive = ctx === audioCtx;
+    if (isLive) teardownLiveFxChain();
+    const track = isLive ? (n => { liveFxChainNodes.push(n); return n; }) : (n => n);
+
+    const sorted = [...clips.fx].sort((a, b) => a.layer - b.layer);
+    const entries = sorted.map(clip => buildFxUnit(ctx, clip, track));
+    for (let i = 0; i < entries.length - 1; i++) entries[i].output.connect(entries[i + 1].input);
+    if (entries.length) entries[entries.length - 1].output.connect(ctx.destination);
     return entries;
   }
 
@@ -1886,7 +1994,7 @@
     // Fresh node per FX clip every play() call -- nothing to reset between
     // runs, unlike the old single shared filter.
     const fxChain = buildFxChain(ctx);
-    const mixDest = fxChain.length ? fxChain[0].node : ctx.destination;
+    const mixDest = fxChain.length ? fxChain[0].input : ctx.destination;
 
     [...clips.vocal, ...clips.beats].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
@@ -1897,12 +2005,12 @@
       scheduleClip(ctx, mixDest, clip, playStartCtxTime + startDelaySec, playDurSec, barsToSeconds(offsetIntoClipBars));
     });
 
-    fxChain.forEach(({ clip, node }) => {
+    fxChain.forEach(({ clip, automate }) => {
       const clipEndBar = clip.position + clip.duration;
       if (clipEndBar <= playheadBar) return;
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
       const startDelaySec = Math.max(0, barsToSeconds(clip.position - playheadBar));
-      scheduleFxClip(node, clip, playStartCtxTime + startDelaySec, barsToSeconds(offsetIntoClipBars));
+      automate(playStartCtxTime + startDelaySec, barsToSeconds(offsetIntoClipBars));
     });
 
     isPlaying = true;
@@ -1913,6 +2021,7 @@
   function pause() {
     isPlaying = false;
     stopAllNodes();
+    teardownLiveFxChain(); // stop any phaser LFOs rather than leaving them running silently until the next play()
     playIcon.innerHTML = '<path d="M8 5v14l11-7z" fill="white"></path>';
     if (rafId) cancelAnimationFrame(rafId);
   }
@@ -1964,13 +2073,13 @@
     const sampleRate = 44100;
     const offline = new OfflineAudioContext(2, Math.ceil((endSec + 0.5) * sampleRate), sampleRate);
     const fxChain = buildFxChain(offline);
-    const mixDest = fxChain.length ? fxChain[0].node : offline.destination;
+    const mixDest = fxChain.length ? fxChain[0].input : offline.destination;
 
     [...clips.vocal, ...clips.beats].forEach(clip => {
       scheduleClip(offline, mixDest, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
     });
-    fxChain.forEach(({ clip, node }) => {
-      scheduleFxClip(node, clip, barsToSeconds(clip.position) + 0.05, 0);
+    fxChain.forEach(({ clip, automate }) => {
+      automate(barsToSeconds(clip.position) + 0.05, 0);
     });
 
     return offline.startRendering();

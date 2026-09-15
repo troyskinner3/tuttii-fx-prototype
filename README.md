@@ -40,17 +40,25 @@ it's held (not just on release) — without that, an up/down drag looked
 like it silently did nothing until you let go, reading as broken rather
 than as an intentional gesture.
 
-Audio-wise, each FX clip gets its **own dedicated `BiquadFilterNode`**
-(`buildFxChain`, rebuilt fresh every `play()`/export call), chained in
-series ordered by `.layer` before the Vocal/Beats mix reaches the
-destination. A node only departs from neutral during its own clip's
-window, so simply keeping every FX clip's node permanently in that series
-chain for the whole run is enough to get correct layering for free — no
-dynamic connect/disconnect scheduling needed, and two overlapping clips
-just both apply during their shared window, in priority order.
+Audio-wise, each FX clip gets its **own dedicated audio unit** (`buildFxUnit`
+via `buildFxChain`, rebuilt fresh every `play()`/export call) — for a
+simple filter sweep that's a single `BiquadFilterNode`; a phaser needs
+several nodes wired together internally but still exposes one input/output
+pair. Units are chained in series ordered by `.layer` before the
+Vocal/Beats mix reaches the destination. A unit only departs from neutral
+during its own clip's window, so simply keeping every FX clip's unit
+permanently in that series chain for the whole run is enough to get
+correct layering for free — no dynamic connect/disconnect scheduling
+needed, and two overlapping clips just both apply during their shared
+window, in priority order. The one thing that *does* need explicit
+teardown between runs is a phaser's LFO oscillator (a live source, unlike
+a filter's passive coefficients) — `teardownLiveFxChain` disconnects and
+stops every node the previous live-context run built, called both from
+`pause()` and at the start of the next `buildFxChain`, so nothing
+accumulates across repeated play/pause cycles. (Not needed for exports —
+each one gets its own throwaway `OfflineAudioContext`.)
 
-Two effect types exist so far, both mirror images of the same shaped
-sweep on a `BiquadFilterNode`'s cutoff:
+Three effect types exist so far:
 
 - **High Pass Sweep** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
   (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
@@ -70,24 +78,30 @@ sweep on a `BiquadFilterNode`'s cutoff:
   the last fifth of the sweep instead of spreading evenly, reading as a
   sudden kick near the end rather than a steady climb. Scheduled as a
   chain of ~24 short `exponentialRampToValueAtTime` segments sampled off
-  that shaped curve (`fxSweepValueAt`), since the native API alone only
-  produces a constant-ratio (plain exponential) ramp. Both effects share
-  this same scheduling code (`scheduleFxSweep`) parameterized by
-  `fromHz`/`toHz`/`curvePower` off the `FX_EFFECTS` entry — a future effect
-  needing a genuinely different curve shape or automation target (e.g. a
-  phaser's dry/wet mix) would add its own scheduling function rather than
-  overloading this one.
+  that shaped curve (`fxExpShapedValueAt`), since the native API alone
+  only produces a constant-ratio (plain exponential) ramp. Both effects
+  share this same scheduling code (`scheduleFxSweep`) parameterized by
+  `fromHz`/`toHz`/`curvePower` off the `FX_EFFECTS` entry.
+- **Phaser Sweep** (2/4/8/16-bar variants): Web Audio has no native phaser
+  node, so it's built from primitives — 6 series `allpass` `BiquadFilterNode`s
+  (`stages`), all modulated in phase by one shared LFO (a 0.3Hz sine
+  oscillator, `lfoRateHz`, fanned out to every stage's frequency param at
+  once — in-phase motion across all stages is what creates the moving
+  notches), then crossfaded against the dry signal via two gain nodes. The
+  "curve" here is that dry/wet crossfade, 0 (fully dry) to 1 (fully wet)
+  and back to 0 at the end, same shaped rise-then-reset envelope as the
+  filter sweeps but via **linear** interpolation (`fxLinearShapedValueAt`,
+  `schedulePhaserSweep`) rather than exponential — a proportion like
+  dry/wet has no meaningful "ratio," and 0 is a needed endpoint that
+  `exponentialRampToValueAtTime` can't reach at all. Deliberately simple
+  for this first pass, per an explicit "start simple, iterate later": fixed
+  LFO rate (not tied to clip length), no feedback/resonance path, and the
+  curve controls only dry/wet — allpass center frequency (800Hz) and LFO
+  depth (±600Hz) are constants for now, not curve-controlled.
 
-Known limitation, intentional for now: this is a **single global filter
-node**, not one instance per clip — the FX lane can't have overlapping
-clips yet (same non-overlap rule as Vocal/Beats today), so there's nothing
-to combine. The planned future model (once a second effect type exists to
-actually test it against) is per-clip node instances stacked in series,
-ordered like layers in an image/video editor — vertical position in the FX
-lane doubles as processing order, new clips insert at the top (processed
-first), and the user can drag to reorder. `clip.effectId` is already on the
-data model (not hardcoded to one row) specifically so that transition is a
-rendering-layer addition later, not a data migration.
+The stacking/layering system this all runs on (`.layer`, `fxSlotFor`,
+`allocateTopFxLayer`, `swapFxLayer`, the vertical-drag gesture) is
+documented above, in the FX lane paragraphs.
 
 # Tuttii Mini Editor
 
