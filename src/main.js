@@ -1037,6 +1037,17 @@
         // clip's actual position) is untouched until release, so nothing here
         // can produce a gap or overlap mid-gesture.
         el.style.left = barsToPx(clip.position + dx) + "px";
+        if (clip.track === "fx") {
+          // Lift the clip vertically with the finger too -- without this,
+          // dragging up/down to restack looked like it silently did
+          // nothing until release, reading as broken rather than as a
+          // real gesture. .layer isn't touched until release (swapFxLayer
+          // there), so fxSlotFor(clip) stays at its pre-drag value for the
+          // whole gesture -- this is just that fixed baseline plus the
+          // raw finger offset, not a live re-preview of the eventual swap.
+          el.style.top = (fxSlotFor(clip) * FX_SUBLANE_PX + 1 + dyPx) + "px";
+          el.style.zIndex = 5; // stay visually on top while passing over whatever it's about to swap with
+        }
       } else {
         scrollArea.scrollLeft = startScrollLeft - dxPx;
       }

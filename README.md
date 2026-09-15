@@ -35,6 +35,10 @@ swaps its priority with whichever overlapping clip is immediately next in
 that direction — the FX equivalent of dragging a layer up/down a stack in
 an image editor; dragging mostly horizontally still just repositions it in
 time, and `.layer` is untouched either way unless that vertical swap fires.
+The clip visually lifts and follows the finger vertically the whole time
+it's held (not just on release) — without that, an up/down drag looked
+like it silently did nothing until you let go, reading as broken rather
+than as an intentional gesture.
 
 Audio-wise, each FX clip gets its **own dedicated `BiquadFilterNode`**
 (`buildFxChain`, rebuilt fresh every `play()`/export call), chained in
