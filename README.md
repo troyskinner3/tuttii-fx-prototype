@@ -10,10 +10,22 @@ this line is inherited from the original project and still applies here.
 
 ## FX (in progress)
 
-A new "FX" library tab and a thin FX lane (between Vocal and Beats) let you
-drag effect clips onto the timeline, same interaction model as Vocal/Beats
-(drag, move, trim, duplicate, delete, undo/redo — all reused as-is, since
-`clips.fx` is just a third generic lane).
+A new "FX" library tab (same tap-to-expand pattern as Songs — one row per
+effect type, tap to reveal its duration-variant chips in place) and a thin
+FX lane (between Vocal and Beats) let you drag effect clips onto the
+timeline.
+
+Unlike Vocal/Beats, the FX lane is **freely positioned, not flush-packed**:
+a clip lands wherever it's dropped (snapped to the nearest bar) and stays
+there — dropping, moving, or trimming one doesn't push its neighbors
+around, and `layout()` is never called for the `fx` track. The one
+guardrail is that two FX clips still can't occupy overlapping bars (a
+single shared filter node, see below, has nothing defined for what two
+simultaneous automations on it would mean) — an overlapping drop is
+rejected outright (with a live red-tint preview while dragging), a trim is
+capped at the nearest neighbor, and a move reverts silently. Everything
+else — move, trim, duplicate, delete, undo/redo — is reused as-is from
+Vocal/Beats' generic clip machinery, just without the reflow step.
 
 FX clips automate a single shared master `BiquadFilterNode` that both
 Vocal and Beats route through before the destination — so an effect applies

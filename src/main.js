@@ -43,6 +43,19 @@
     clips[type].forEach(c => { c.position = pos; pos += c.duration; });
   }
 
+  // FX clips don't use layout() -- unlike Vocal/Beats, they're positioned
+  // freely anywhere on the timeline (snapped to the nearest bar) rather than
+  // always flush-packed against their neighbors. This is the one guardrail
+  // that replaces flush-packing: two FX clips still can't occupy the same
+  // bars, since there's currently a single shared master filter (no
+  // per-clip node instances yet) with nothing defined for what two
+  // simultaneous automations on the same param would even mean.
+  function fxOverlaps(candidate, excludeUid) {
+    return clips.fx.some(c => c.uid !== excludeUid &&
+      candidate.position < c.position + c.duration &&
+      candidate.position + candidate.duration > c.position);
+  }
+
   // ---------- Song / section data ----------
   // Sections are stem-agnostic, matching the real app: a section carries a vocal root
   // pitch (for when it's dropped as a vocal) and works generically as a beat pattern
@@ -201,6 +214,8 @@
   // At most one song's sections are exposed at a time -- expanding a
   // different song collapses whichever one was open.
   let expandedSongId = null;
+  // Same idea, for the FX tab's effect-type rows.
+  let expandedFxId = null;
 
   let audioCtx = null;
   let audioUnlocked = false;
@@ -469,24 +484,9 @@
 
     if (activeLibraryTab === "fx") {
       FX_EFFECTS.forEach(effect => {
-        const header = document.createElement("div");
-        header.className = "song-header";
-        header.innerHTML = `
-          <div class="song-thumb fx-thumb">${effect.icon}</div>
-          <div class="song-info">
-            <div class="song-title">${effect.label}</div>
-            <div class="song-sub">Drag into the FX lane</div>
-          </div>
-        `;
-        songLibrary.appendChild(header);
-
-        const row = document.createElement("div");
-        row.className = "chip-row";
-        effect.durationsBars.forEach(dur => {
-          const chip = { id: `${effect.id}-${dur}`, label: effect.label, durBars: dur, isFx: true, effectId: effect.id };
-          row.appendChild(makeChip(chip, "", "both", false));
-        });
-        songLibrary.appendChild(row);
+        songLibrary.appendChild(
+          effect.id === expandedFxId ? buildExpandedFxRow(effect) : buildFxSummaryRow(effect)
+        );
       });
       return;
     }
@@ -497,6 +497,48 @@
         song.id === expandedSongId ? buildExpandedSongRow(song, mode) : buildSongSummaryRow(song)
       );
     });
+  }
+
+  // Same summary/expand pattern as a song: a row per effect type, tap to
+  // reveal its duration variants in place (only one expanded at a time).
+  function buildFxSummaryRow(effect) {
+    const header = document.createElement("div");
+    header.className = "song-header";
+    header.innerHTML = `
+      <div class="song-thumb fx-thumb">${effect.icon}</div>
+      <div class="song-info">
+        <div class="song-title">${effect.label}</div>
+        <div class="song-sub">Tap to view durations</div>
+      </div>
+      <button class="song-expand-btn" title="View durations">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    `;
+    header.addEventListener("click", () => {
+      expandedFxId = effect.id;
+      renderLibrary();
+    });
+    return header;
+  }
+
+  function buildExpandedFxRow(effect) {
+    const row = document.createElement("div");
+    row.className = "chip-row";
+    effect.durationsBars.forEach(dur => {
+      const chip = { id: `${effect.id}-${dur}`, label: effect.label, durBars: dur, isFx: true, effectId: effect.id };
+      row.appendChild(makeChip(chip, "", "both", false));
+    });
+
+    const back = document.createElement("button");
+    back.className = "song-back-btn";
+    back.title = "Back to " + effect.label;
+    back.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>`;
+    back.addEventListener("click", () => {
+      expandedFxId = null;
+      renderLibrary();
+    });
+    row.appendChild(back);
+    return row;
   }
 
   function buildSongSummaryRow(song) {
@@ -625,12 +667,23 @@
     }
 
     function updateHighlight(x, y) {
-      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid"));
+      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
       const el = document.elementFromPoint(x, y);
       const laneEl = el && el.closest(".row-lane");
       const valid = laneEl && validLanesFor().includes(laneEl);
-      const type = valid ? laneEl.dataset.track : null;
-      if (type) laneEl.classList.add("drop-valid");
+      let type = valid ? laneEl.dataset.track : null;
+      if (valid && laneEl === fxLane) {
+        // FX has no flush-packing to fall back on, so give live feedback on
+        // whether wherever the pointer currently is would actually stick.
+        const rect = fxLane.getBoundingClientRect();
+        const cursorBars = pxToBars(x - rect.left);
+        const snappedPos = snap(cursorBars - sec.durBars / 2, 1);
+        const overlapping = fxOverlaps({ position: snappedPos, duration: sec.durBars }, null);
+        laneEl.classList.add(overlapping ? "drop-invalid" : "drop-valid");
+        if (overlapping) type = null; // ghost stays neutral, not a false "fx" promise
+      } else if (type) {
+        laneEl.classList.add("drop-valid");
+      }
       if (type !== hoverType) {
         hoverType = type;
         ghost.classList.remove("vocal", "beats", "fx", "neutral");
@@ -639,7 +692,7 @@
     }
 
     function clearHighlight() {
-      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid"));
+      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
     }
 
     function onMove(ev) {
@@ -737,19 +790,30 @@
       if (song) preloadMatched(song).then(() => renderClips()).catch(() => {});
     }
 
-    const arr = clips[type];
-    let insertIdx = arr.length; // default: append at the end
-    for (let i = 0; i < arr.length; i++) {
-      const c = arr[i];
-      if (cursorBars < c.position + c.duration) {
-        const midpoint = c.position + c.duration / 2;
-        insertIdx = (cursorBars >= midpoint) ? i + 1 : i;
-        break;
+    if (type === "fx") {
+      // No flush-packing here -- lands wherever it's dropped, snapped to
+      // the nearest bar (cursorBars is where the pointer is, and the ghost
+      // is centered on the pointer, so center the clip on it too). Refuses
+      // the drop outright if that would overlap an existing FX clip (see
+      // fxOverlaps' comment for why) rather than shoving neighbors aside.
+      const snappedPos = snap(cursorBars - clip.duration / 2, 1);
+      if (fxOverlaps({ position: snappedPos, duration: clip.duration }, null)) return;
+      clip.position = snappedPos;
+      clips.fx.push(clip);
+    } else {
+      const arr = clips[type];
+      let insertIdx = arr.length; // default: append at the end
+      for (let i = 0; i < arr.length; i++) {
+        const c = arr[i];
+        if (cursorBars < c.position + c.duration) {
+          const midpoint = c.position + c.duration / 2;
+          insertIdx = (cursorBars >= midpoint) ? i + 1 : i;
+          break;
+        }
       }
+      arr.splice(insertIdx, 0, clip);
+      layout(type);
     }
-
-    arr.splice(insertIdx, 0, clip);
-    layout(type);
 
     trackFirstInteraction();
     renderClips();
@@ -921,7 +985,17 @@
       if (!decided) { openInspector(clip.uid); return; }
       if (!isReorder) return; // was a scroll gesture, nothing left to do
       if (moved) {
-        reorderClip(clip, startCenterBars + liveDx);
+        if (clip.track === "fx") {
+          // Free positioning, not flush-packing -- el.style.left already
+          // live-previewed clip.position + liveDx during the drag, so just
+          // commit that same left edge (snapped, overlap-checked). Silently
+          // reverts to the original position if it would overlap.
+          moveFxClip(clip, clip.position + liveDx);
+          renderClips();
+          selectClip(clip.uid);
+        } else {
+          reorderClip(clip, startCenterBars + liveDx);
+        }
         commitHistory();
       } else {
         openInspector(clip.uid); // held past the delay but never actually moved -> still a tap
@@ -969,6 +1043,16 @@
     selectClip(clip.uid);
   }
 
+  // FX's equivalent of reorderClip -- no siblings to slot between, just an
+  // absolute left edge, snapped to the nearest bar. No-ops (leaves
+  // clip.position untouched) if the target spot would overlap another FX
+  // clip, per fxOverlaps' comment.
+  function moveFxClip(clip, desiredLeftBars) {
+    const snapped = snap(desiredLeftBars, 1);
+    if (fxOverlaps({ position: snapped, duration: clip.duration }, clip.uid)) return;
+    clip.position = snapped;
+  }
+
   function startClipTrim(e, clip, el, side) {
     e.preventDefault();
     e.stopPropagation();
@@ -990,6 +1074,19 @@
         ? Math.floor((buf.duration - clip.sourceStart) / BAR_SECONDS)
         : Math.floor(clip.sourceEnd / BAR_SECONDS);
       maxDurBars = Math.max(MIN_DUR_BARS, maxDurBars);
+    }
+    // FX has no source buffer to bound it, but it does have neighbors --
+    // freely-positioned clips can still butt up against another FX clip on
+    // either side, so growing past that would overlap it (same rule as a drop).
+    if (clip.track === "fx") {
+      const neighbors = clips.fx.filter(c => c.uid !== clip.uid);
+      if (side === "right") {
+        const next = neighbors.filter(c => c.position >= clip.position + clip.duration).sort((a, b) => a.position - b.position)[0];
+        if (next) maxDurBars = Math.max(MIN_DUR_BARS, next.position - clip.position);
+      } else {
+        const prev = neighbors.filter(c => c.position + c.duration <= clip.position).sort((a, b) => b.position - a.position)[0];
+        if (prev) maxDurBars = Math.max(MIN_DUR_BARS, (clip.position + clip.duration) - (prev.position + prev.duration));
+      }
     }
 
     function previewDuration() {
@@ -1020,7 +1117,8 @@
       cleanup();
 
       const type = clip.track;
-      clip.duration = previewDuration();
+      const newDuration = previewDuration();
+      clip.duration = newDuration;
       // Keep whichever edge wasn't dragged anchored in source-buffer time,
       // and derive the other edge from the new duration -- so extending a
       // handle reveals more of the real stem on that side, and shrinking
@@ -1029,10 +1127,17 @@
         if (side === "right") clip.sourceEnd = clip.sourceStart + clip.duration * BAR_SECONDS;
         else clip.sourceStart = clip.sourceEnd - clip.duration * BAR_SECONDS;
       }
-      // Same as the right handle: this clip's position is untouched, and
-      // layout() pushes everything after it out to make room, guaranteeing
-      // no overlap and no gap regardless of which handle changed the length.
-      layout(type);
+      if (type === "fx") {
+        // No layout() reflow for FX -- instead, a left-handle trim moves
+        // position itself (grow left = duration up, right edge fixed);
+        // a right-handle trim already left position untouched above.
+        if (side === "left") clip.position = Math.max(0, (clip.position + startDur) - newDuration);
+      } else {
+        // Vocal/Beats: this clip's position is untouched, and layout()
+        // pushes everything after it out to make room, guaranteeing no
+        // overlap and no gap regardless of which handle changed the length.
+        layout(type);
+      }
 
       renderClips();
       selectClip(clip.uid);
@@ -1097,8 +1202,17 @@
     const arr = clips[type];
     const idx = arr.indexOf(original);
     const clone = { ...original, uid: uidCounter++ };
-    arr.splice(idx + 1, 0, clone);
-    layout(type);
+    if (type === "fx") {
+      // No flush order to insert into -- place it right after the
+      // original, nudging right bar-by-bar until it clears any overlap.
+      let pos = original.position + original.duration;
+      while (fxOverlaps({ position: pos, duration: clone.duration }, clone.uid) && pos < TOTAL_BARS) pos++;
+      clone.position = pos;
+      arr.push(clone);
+    } else {
+      arr.splice(idx + 1, 0, clone);
+      layout(type);
+    }
     renderClips();
     openInspector(clone.uid);
     scrollClipIntoView(clone);
@@ -1110,7 +1224,9 @@
     const original = findClip(selectedUid);
     const type = original ? original.track : null;
     ["vocal", "beats", "fx"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
-    if (type) layout(type); // close the gap left behind, keep the track flush
+    // FX clips are freely positioned -- deleting one shouldn't drag its
+    // remaining siblings' positions along with it, so skip the reflow there.
+    if (type && type !== "fx") layout(type); // close the gap left behind, keep the track flush
     selectedUid = null;
     inspector.classList.remove("show");
     renderClips();
