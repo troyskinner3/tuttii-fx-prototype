@@ -10,6 +10,7 @@
     --text-dim: #9A8DBD;
     --border: #33224F;
     --label-w: 66px;
+    --amber: #F0A93E;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -266,10 +267,14 @@
   .row-label .icon { font-size: 15px; }
   .row-label.vocal { color: var(--cyan); }
   .row-label.beats { color: var(--pink); }
+  .row-label.fx { color: var(--amber); font-size: 9px; letter-spacing: 0.04em; }
   .row-lane {
     position: relative;
     flex-shrink: 0;
   }
+  /* Thin FX lane sitting between Vocal and Beats -- ~25% of their height,
+     just enough to read a clip's effect name without feeling squished. */
+  .row.fx { height: 18px; }
   .bar-line {
     position: absolute;
     top: 0; bottom: 0;
@@ -279,6 +284,7 @@
 
   .row-lane.drop-valid { background: rgba(79,209,232,0.06); }
   .row-lane.beats.drop-valid { background: rgba(232,75,198,0.06); }
+  .row-lane.fx.drop-valid { background: rgba(240,169,62,0.1); }
   .row-lane.drop-invalid { background: rgba(255,90,90,0.06); }
 
   .scrub-row {
@@ -354,6 +360,23 @@
   }
   .clip.selected.vocal { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(79,209,232,0.35); }
   .clip.selected.beats { border-color: var(--pink); box-shadow: 0 0 0 2px rgba(232,75,198,0.35); }
+  .clip.fx {
+    top: 2px;
+    bottom: 2px;
+    padding: 0 6px;
+    justify-content: center;
+    background: linear-gradient(160deg, #4A3510, #2E2008);
+    border: 1px solid rgba(240,169,62,0.55);
+  }
+  .clip.selected.fx { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(240,169,62,0.35); }
+  .clip-name.fx-clip-name {
+    font-size: 9px;
+    line-height: 1;
+    color: var(--amber);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .clip.silence {
     background: repeating-linear-gradient(45deg, rgba(255,255,255,0.03), rgba(255,255,255,0.03) 6px, rgba(255,255,255,0.07) 6px, rgba(255,255,255,0.07) 12px);
     border: 1px dashed var(--text-dim);
@@ -449,6 +472,9 @@
     display: none;
   }
   .inspector.show { display: block; }
+  /* FX clips have no independent volume -- they automate the shared master
+     filter, not a gain node -- so the slider would be a dead control. */
+  .inspector.fx-clip .vol-row { display: none; }
   .inspector-head {
     display: flex;
     align-items: center;
@@ -584,6 +610,9 @@
   .song-thumb.silence-thumb {
     background: repeating-linear-gradient(45deg, rgba(255,255,255,0.06), rgba(255,255,255,0.06) 5px, rgba(255,255,255,0.13) 5px, rgba(255,255,255,0.13) 10px);
     border: 1px solid var(--border);
+  }
+  .song-thumb.fx-thumb {
+    background: linear-gradient(135deg, var(--amber), #C77D0E);
   }
   .song-info { min-width: 0; flex: 1; }
   .song-title {
@@ -735,6 +764,7 @@
   }
   .drag-ghost.vocal { background: rgba(79,209,232,0.85); border: 1px solid var(--cyan); }
   .drag-ghost.beats { background: rgba(232,75,198,0.85); border: 1px solid var(--pink); }
+  .drag-ghost.fx { background: rgba(240,169,62,0.9); border: 1px solid var(--amber); }
   .drag-ghost.neutral { background: rgba(160,85,213,0.85); border: 1px solid var(--violet); }
   .drag-ghost .clip-name { color: var(--ink); font-size: 11.5px; font-weight: 700; }
   .drag-ghost .clip-sub { color: rgba(11,7,22,0.7); font-size: 9.5px; }

@@ -8,6 +8,37 @@ unlisted Webflow page (`tuttii.app/prototype`, excluded from the sitemap, not
 linked from anywhere) so it never affects the live demo. Everything below
 this line is inherited from the original project and still applies here.
 
+## FX (in progress)
+
+A new "FX" library tab and a thin FX lane (between Vocal and Beats) let you
+drag effect clips onto the timeline, same interaction model as Vocal/Beats
+(drag, move, trim, duplicate, delete, undo/redo — all reused as-is, since
+`clips.fx` is just a third generic lane).
+
+FX clips automate a single shared master `BiquadFilterNode` that both
+Vocal and Beats route through before the destination — so an effect applies
+to everything unless a future effect type says otherwise. Only one FX type
+exists so far:
+
+- **High Pass Sweep** (2/4/8/16-bar variants): highpass cutoff sweeps
+  exponentially from 20Hz (neutral) up to 20kHz (peak, most content
+  blocked) over the clip's duration, then ramps back to 20Hz in the final
+  ~15ms so it doesn't leave the next section filtered. A hard instant
+  reset was considered and rejected — an instantaneous filter-coefficient
+  jump risks a click even though the signal itself is already near-silent
+  up there; the brief ramp avoids that while still reading as a snap.
+
+Known limitation, intentional for now: this is a **single global filter
+node**, not one instance per clip — the FX lane can't have overlapping
+clips yet (same non-overlap rule as Vocal/Beats today), so there's nothing
+to combine. The planned future model (once a second effect type exists to
+actually test it against) is per-clip node instances stacked in series,
+ordered like layers in an image/video editor — vertical position in the FX
+lane doubles as processing order, new clips insert at the top (processed
+first), and the user can drag to reorder. `clip.effectId` is already on the
+data model (not hardcoded to one row) specifically so that transition is a
+rendering-layer addition later, not a data migration.
+
 # Tuttii Mini Editor
 
 A browser-based mini music editor prototype — drag stem-agnostic song sections

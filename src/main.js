@@ -157,9 +157,22 @@
   });
 
   // clip: {uid, track, label, songName, root, position(bars), duration(bars), volume}
-  let clips = { vocal: [], beats: [] };
+  // fx clips carry no songName/root -- just {effectId}, and automate the
+  // shared master filter (see FX_EFFECTS + scheduleFxClip) instead of
+  // producing their own sound.
+  let clips = { vocal: [], beats: [], fx: [] };
   let uidCounter = 1;
   let selectedUid = null;
+
+  // ---------- FX ----------
+  // One row per effect type in the library (mirrors Silence's flat
+  // duration-chip row); durationsBars are the preset lengths offered as
+  // draggable chips. Only one effect exists for now -- highpass-sweep --
+  // but scheduleFxClip() already branches on effectId so adding a second
+  // type later is additive, not a rewrite.
+  const FX_EFFECTS = [
+    { id: "highpass-sweep", label: "High Pass Sweep", icon: "📈", durationsBars: [2, 4, 8, 16] },
+  ];
 
   // ---------- Analytics ----------
   // Fires once per page load, the first time the user does something that
@@ -209,8 +222,10 @@
   const beatsRow = document.getElementById("beatsRow");
   const vocalLane = document.getElementById("vocalLane");
   const beatsLane = document.getElementById("beatsLane");
+  const fxLane = document.getElementById("fxLane");
   const vocalEmpty = document.getElementById("vocalEmpty");
   const beatsEmpty = document.getElementById("beatsEmpty");
+  const fxEmpty = document.getElementById("fxEmpty");
   const scrubLane = document.getElementById("scrubLane");
   const playhead = document.getElementById("playhead");
   const timeCur = document.getElementById("timeCur");
@@ -272,14 +287,15 @@
   function buildTimelineGrid() {
     vocalLane.querySelectorAll(".bar-line").forEach(el => el.remove());
     beatsLane.querySelectorAll(".bar-line").forEach(el => el.remove());
+    fxLane.querySelectorAll(".bar-line").forEach(el => el.remove());
     scrubLane.querySelectorAll(".scrub-tick").forEach(el => el.remove());
 
     const contentWidth = barsToPx(TOTAL_BARS);
     scrollInner.style.width = (LABEL_W + contentWidth) + "px";
-    [vocalLane, beatsLane, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
+    [vocalLane, beatsLane, fxLane, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
 
     for (let b = 0; b < TOTAL_BARS; b++) {
-      [vocalLane, beatsLane].forEach(lane => {
+      [vocalLane, beatsLane, fxLane].forEach(lane => {
         const gl = document.createElement("div");
         gl.className = "bar-line" + (b % 4 === 0 ? " major" : "");
         gl.style.left = barsToPx(b) + "px";
@@ -451,6 +467,30 @@
       return;
     }
 
+    if (activeLibraryTab === "fx") {
+      FX_EFFECTS.forEach(effect => {
+        const header = document.createElement("div");
+        header.className = "song-header";
+        header.innerHTML = `
+          <div class="song-thumb fx-thumb">${effect.icon}</div>
+          <div class="song-info">
+            <div class="song-title">${effect.label}</div>
+            <div class="song-sub">Drag into the FX lane</div>
+          </div>
+        `;
+        songLibrary.appendChild(header);
+
+        const row = document.createElement("div");
+        row.className = "chip-row";
+        effect.durationsBars.forEach(dur => {
+          const chip = { id: `${effect.id}-${dur}`, label: effect.label, durBars: dur, isFx: true, effectId: effect.id };
+          row.appendChild(makeChip(chip, "", "both", false));
+        });
+        songLibrary.appendChild(row);
+      });
+      return;
+    }
+
     const mode = previewModeForTab(activeLibraryTab);
     SONGS.forEach(song => {
       songLibrary.appendChild(
@@ -539,7 +579,7 @@
     if (compact) {
       chip.innerHTML = `<span class="chip-bars">${sec.durBars}</span><span class="label">${sec.label}</span>${miniWaveHtml(seedFromId(sec.id))}`;
     } else {
-      const playIconHtml = sec.isSilence ? "" : `<span class="chip-play-icon">▶</span>`;
+      const playIconHtml = (sec.isSilence || sec.isFx) ? "" : `<span class="chip-play-icon">▶</span>`;
       chip.innerHTML = `<span class="label">${sec.label}</span>${songName ? `<span class="song">${songName}</span>` : ""}<span class="dur">${sec.durBars} bar${sec.durBars > 1 ? "s" : ""}</span>${playIconHtml}`;
     }
     chip.addEventListener("pointerdown", (e) => startChipDrag(e, sec, songName, chip, mode || "both"));
@@ -577,21 +617,29 @@
       ghost.style.top = (y - 30) + "px";
     }
 
+    // FX chips only drop into the FX lane; everything else (songs/silence)
+    // only drops into Vocal/Beats -- keeps a filter sweep from landing in
+    // an audio lane or vice versa.
+    function validLanesFor() {
+      return sec.isFx ? [fxLane] : [vocalLane, beatsLane];
+    }
+
     function updateHighlight(x, y) {
-      [vocalLane, beatsLane].forEach(l => l.classList.remove("drop-valid"));
+      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid"));
       const el = document.elementFromPoint(x, y);
-      const lane = el && el.closest(".row-lane");
-      const type = lane ? lane.dataset.track : null;
-      if (type) lane.classList.add("drop-valid");
+      const laneEl = el && el.closest(".row-lane");
+      const valid = laneEl && validLanesFor().includes(laneEl);
+      const type = valid ? laneEl.dataset.track : null;
+      if (type) laneEl.classList.add("drop-valid");
       if (type !== hoverType) {
         hoverType = type;
-        ghost.classList.remove("vocal", "beats", "neutral");
+        ghost.classList.remove("vocal", "beats", "fx", "neutral");
         ghost.classList.add(hoverType || "neutral");
       }
     }
 
     function clearHighlight() {
-      [vocalLane, beatsLane].forEach(l => l.classList.remove("drop-valid"));
+      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid"));
     }
 
     function onMove(ev) {
@@ -630,7 +678,7 @@
       if (dragging) {
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         const lane = el && el.closest(".row-lane");
-        if (lane) {
+        if (lane && validLanesFor().includes(lane)) {
           const type = lane.dataset.track;
           const rect = lane.getBoundingClientRect();
           const cursorBars = pxToBars(ev.clientX - rect.left);
@@ -639,8 +687,8 @@
         if (ghost) ghost.remove();
       } else {
         // A tap with no meaningful movement — preview this section instead
-        // of placing it. Silence has nothing to preview.
-        if (!sec.isSilence) togglePreview(sec, chipEl, mode);
+        // of placing it. Silence and FX have nothing to preview.
+        if (!sec.isSilence && !sec.isFx) togglePreview(sec, chipEl, mode);
       }
     }
 
@@ -667,6 +715,7 @@
       volume: 1,
       isSilence: !!sec.isSilence,
     };
+    if (sec.isFx) clip.effectId = sec.effectId;
     // Real sections carry no synthesized pitch/pattern -- instead they point
     // at an offset range into the song's pre-rendered "matched" stem buffer
     // (already time/pitch-matched to the locked project BPM/key), which is
@@ -738,13 +787,16 @@
   function renderClips() {
     vocalLane.querySelectorAll(".clip").forEach(el => el.remove());
     beatsLane.querySelectorAll(".clip").forEach(el => el.remove());
+    fxLane.querySelectorAll(".clip").forEach(el => el.remove());
     vocalEmpty.style.display = clips.vocal.length ? "none" : "flex";
     beatsEmpty.style.display = clips.beats.length ? "none" : "flex";
+    fxEmpty.style.display = clips.fx.length ? "none" : "flex";
 
     clips.vocal.forEach(c => vocalLane.appendChild(buildClipEl(c)));
     clips.beats.forEach(c => beatsLane.appendChild(buildClipEl(c)));
+    clips.fx.forEach(c => fxLane.appendChild(buildClipEl(c)));
 
-    const anyClips = clips.vocal.length > 0 || clips.beats.length > 0;
+    const anyClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.fx.length > 0;
     exportWavBtn.disabled = !anyClips;
     exportMp3Btn.disabled = !anyClips;
     timeTotal.textContent = formatTime(barsToSeconds(timelineEndBars()));
@@ -760,6 +812,8 @@
     let bodyHtml;
     if (clip.isSilence) {
       bodyHtml = `<div class="clip-name">Silence</div><div class="clip-sub">${clip.duration} bar${clip.duration > 1 ? "s" : ""}</div>`;
+    } else if (clip.track === "fx") {
+      bodyHtml = `<div class="clip-name fx-clip-name">${clip.label}</div>`;
     } else {
       const widthPx = barsToPx(clip.duration);
       const barsCount = Math.max(5, Math.round(widthPx / 7));
@@ -994,7 +1048,7 @@
 
   // ---------- Selection / inspector ----------
   function findClip(uid) {
-    return clips.vocal.find(c => c.uid === uid) || clips.beats.find(c => c.uid === uid);
+    return clips.vocal.find(c => c.uid === uid) || clips.beats.find(c => c.uid === uid) || clips.fx.find(c => c.uid === uid);
   }
 
   function selectClip(uid) {
@@ -1017,6 +1071,7 @@
     volSlider.value = Math.round(clip.volume * 100);
     volVal.textContent = Math.round(clip.volume * 100) + "%";
     updateVolSliderFill();
+    inspector.classList.toggle("fx-clip", clip.track === "fx");
     inspector.classList.add("show");
   }
 
@@ -1054,7 +1109,7 @@
     if (selectedUid == null) return;
     const original = findClip(selectedUid);
     const type = original ? original.track : null;
-    ["vocal", "beats"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
+    ["vocal", "beats", "fx"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
     if (type) layout(type); // close the gap left behind, keep the track flush
     selectedUid = null;
     inspector.classList.remove("show");
@@ -1120,6 +1175,7 @@
 
     clips.vocal = [];
     clips.beats = [];
+    clips.fx = [];
 
     renderClips();
     updatePlayheadEl();
@@ -1244,6 +1300,79 @@
     for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
     noiseBufferCache = { ctx, buf };
     return buf;
+  }
+
+  // ---------- FX audio engine ----------
+  // Vocal/beats clips route through this single shared BiquadFilterNode
+  // (master bus) instead of straight to the destination, so an FX clip
+  // affects everything -- exactly one filter for now since only one FX
+  // type exists and the FX lane can't overlap itself yet. Once a second
+  // effect type lets clips actually stack (see the layered-FX discussion),
+  // this becomes one node per active clip instance instead of one shared
+  // node; nothing else here should need to change shape when that happens.
+  // Cached per-context (like noiseBufferCache) since a fresh
+  // OfflineAudioContext is created for every export.
+  let masterFilterNode = null;
+  const FX_NEUTRAL_HZ = 20;   // effectively bypassed on a 2-pole highpass
+  const FX_PEAK_HZ = 20000;   // top of the audible range
+  const FX_RESET_RAMP_SEC = 0.015; // brief ramp back to neutral, not an instant coefficient jump (avoids a filter-transient click)
+
+  function getMasterFilter(ctx) {
+    if (!masterFilterNode || masterFilterNode.context !== ctx) {
+      masterFilterNode = ctx.createBiquadFilter();
+      masterFilterNode.type = "highpass";
+      masterFilterNode.frequency.value = FX_NEUTRAL_HZ;
+      masterFilterNode.connect(ctx.destination);
+    }
+    return masterFilterNode;
+  }
+
+  // Cancels anything still scheduled from a previous play() run (e.g. a
+  // sweep that was mid-ramp when paused) and re-anchors at neutral, so
+  // every play() call starts the filter from a known, silent-of-side-effects
+  // state before scheduling this run's FX clips.
+  function resetFilterToNeutral(filter, atTime) {
+    filter.frequency.cancelScheduledValues(atTime);
+    filter.frequency.setValueAtTime(FX_NEUTRAL_HZ, atTime);
+  }
+
+  // Exponential interpolation matching exactly how exponentialRampToValueAtTime
+  // itself interpolates, so a value computed here for a given clip-relative
+  // time lines up with where the real ramp would actually be at that instant.
+  // That's what lets playback pick up mid-sweep (e.g. after a seek lands
+  // inside an FX clip) without an audible jump.
+  function highpassSweepValueAt(tSec, totalDurSec, riseDurSec) {
+    if (tSec <= 0 || tSec >= totalDurSec) return FX_NEUTRAL_HZ;
+    if (tSec <= riseDurSec) {
+      const frac = riseDurSec > 0 ? tSec / riseDurSec : 1;
+      return FX_NEUTRAL_HZ * Math.pow(FX_PEAK_HZ / FX_NEUTRAL_HZ, frac);
+    }
+    const fallDurSec = totalDurSec - riseDurSec;
+    const frac = fallDurSec > 0 ? (tSec - riseDurSec) / fallDurSec : 1;
+    return FX_PEAK_HZ * Math.pow(FX_NEUTRAL_HZ / FX_PEAK_HZ, frac);
+  }
+
+  // 20Hz -> 20kHz exponential rise over (almost) the whole clip, then a
+  // brief exponential ramp back to 20Hz in the final FX_RESET_RAMP_SEC so
+  // whatever plays after this clip isn't left filtered. offsetIntoClipSec
+  // lets a clip that starts partway through (a seek landing inside it)
+  // resume from the curve's correct value instead of restarting at 20Hz.
+  function scheduleHighpassSweep(filter, clip, at, offsetIntoClipSec) {
+    const totalDurSec = barsToSeconds(clip.duration);
+    const riseDurSec = Math.max(0.001, totalDurSec - FX_RESET_RAMP_SEC);
+    const startVal = highpassSweepValueAt(offsetIntoClipSec, totalDurSec, riseDurSec);
+    const p = filter.frequency;
+
+    p.setValueAtTime(startVal, at);
+    if (offsetIntoClipSec < riseDurSec) {
+      p.exponentialRampToValueAtTime(FX_PEAK_HZ, at + (riseDurSec - offsetIntoClipSec));
+    }
+    const resetEndAt = Math.max(at + 0.001, at + (totalDurSec - offsetIntoClipSec));
+    p.exponentialRampToValueAtTime(FX_NEUTRAL_HZ, resetEndAt);
+  }
+
+  function scheduleFxClip(filter, clip, at, offsetIntoClipSec) {
+    if (clip.effectId === "highpass-sweep") scheduleHighpassSweep(filter, clip, at, offsetIntoClipSec || 0);
   }
 
   function scheduleClip(ctx, dest, clip, at, dur, offsetIntoClipSec) {
@@ -1473,7 +1602,10 @@
   }
 
   function timelineEndBars() {
-    return Math.max(0.01, ...clips.vocal.map(c => c.position + c.duration), ...clips.beats.map(c => c.position + c.duration));
+    return Math.max(0.01,
+      ...clips.vocal.map(c => c.position + c.duration),
+      ...clips.beats.map(c => c.position + c.duration),
+      ...clips.fx.map(c => c.position + c.duration));
   }
 
   function formatTime(sec) {
@@ -1502,7 +1634,7 @@
     // otherwise schedule nothing at all for it, silently (scheduleRealClip
     // just no-ops without a buffer) -- wait for whatever's actually on the
     // timeline right now rather than assuming it's ready.
-    const songIds = new Set([...clips.vocal, ...clips.beats].map(c => c.songId).filter(Boolean));
+    const songIds = new Set([...clips.vocal, ...clips.beats, ...clips.fx].map(c => c.songId).filter(Boolean));
     await Promise.all([...songIds].map(id => {
       const song = SONGS.find(s => s.id === id);
       return song ? preloadMatched(song).catch(() => {}) : null;
@@ -1515,13 +1647,24 @@
     playStartCtxTime = ctx.currentTime + 0.06;
     playStartBar = playheadBar;
 
+    const filter = getMasterFilter(ctx);
+    resetFilterToNeutral(filter, playStartCtxTime);
+
     [...clips.vocal, ...clips.beats].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
       if (clipEndBar <= playheadBar) return;
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
       const startDelaySec = Math.max(0, barsToSeconds(clip.position - playheadBar));
       const playDurSec = barsToSeconds(clip.duration - offsetIntoClipBars);
-      scheduleClip(ctx, ctx.destination, clip, playStartCtxTime + startDelaySec, playDurSec, barsToSeconds(offsetIntoClipBars));
+      scheduleClip(ctx, filter, clip, playStartCtxTime + startDelaySec, playDurSec, barsToSeconds(offsetIntoClipBars));
+    });
+
+    clips.fx.forEach(clip => {
+      const clipEndBar = clip.position + clip.duration;
+      if (clipEndBar <= playheadBar) return;
+      const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
+      const startDelaySec = Math.max(0, barsToSeconds(clip.position - playheadBar));
+      scheduleFxClip(filter, clip, playStartCtxTime + startDelaySec, barsToSeconds(offsetIntoClipBars));
     });
 
     isPlaying = true;
@@ -1582,9 +1725,14 @@
     const endSec = barsToSeconds(endBars);
     const sampleRate = 44100;
     const offline = new OfflineAudioContext(2, Math.ceil((endSec + 0.5) * sampleRate), sampleRate);
+    const filter = getMasterFilter(offline);
+    resetFilterToNeutral(filter, 0);
 
     [...clips.vocal, ...clips.beats].forEach(clip => {
-      scheduleClip(offline, offline.destination, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
+      scheduleClip(offline, filter, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
+    });
+    clips.fx.forEach(clip => {
+      scheduleFxClip(filter, clip, barsToSeconds(clip.position) + 0.05, 0);
     });
 
     return offline.startRendering();
