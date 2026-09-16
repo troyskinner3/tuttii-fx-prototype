@@ -620,6 +620,8 @@
     border-radius: 12px;
     touch-action: none;
   }
+  .fx-curve-grid-line { stroke: var(--text-dim); stroke-width: 1; opacity: 0.25; }
+  .fx-curve-tick { stroke: var(--text-dim); stroke-width: 1.5; opacity: 1; }
   .fx-curve-path { fill: none; stroke: var(--amber); stroke-width: 2.5; }
   .fx-curve-node {
     fill: var(--amber);

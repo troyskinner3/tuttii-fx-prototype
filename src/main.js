@@ -325,6 +325,7 @@
   const volVal = document.getElementById("volVal");
   const fxCurveSvg = document.getElementById("fxCurveSvg");
   const fxCurvePath = document.getElementById("fxCurvePath");
+  const fxCurveGridGroup = document.getElementById("fxCurveGridGroup");
   const fxCurveSegHandlesGroup = document.getElementById("fxCurveSegHandlesGroup");
   const fxCurveNodesGroup = document.getElementById("fxCurveNodesGroup");
   const fxCurveAddNode = document.getElementById("fxCurveAddNode");
@@ -1371,6 +1372,73 @@
     return new Array(Math.max(0, nodeCount - 1)).fill(null);
   }
 
+  // Inserting a node splits one segment (at splitSegIndex, the old segment
+  // between the two nodes the new one lands between) into two -- both new
+  // halves reset to straight, since a single bow value can't represent two
+  // segments at once, but every *other* segment's bow is unrelated to this
+  // split and carries over unchanged (just shifted to make room).
+  function fxSegCurvesAfterNodeAdd(segCurves, splitSegIndex) {
+    const result = [];
+    for (let i = 0; i < segCurves.length; i++) {
+      if (i === splitSegIndex) { result.push(null, null); continue; }
+      result.push(segCurves[i]);
+    }
+    return result;
+  }
+
+  // Deleting a node merges the two segments touching it -- (deletedIndex-1)
+  // and deletedIndex -- into one new segment, which resets to straight (a
+  // straight-line merge is unambiguous where two independently-bowed
+  // segments joining wouldn't be); every other segment's bow is untouched
+  // by this deletion and carries over unchanged.
+  function fxSegCurvesAfterNodeDelete(segCurves, deletedIndex) {
+    const result = [];
+    for (let i = 0; i < segCurves.length; i++) {
+      if (i === deletedIndex) continue; // merges into the slot below
+      result.push(i === deletedIndex - 1 ? null : segCurves[i]);
+    }
+    return result;
+  }
+
+  // Quarter grid lines (faint, full-span) plus matching tick marks (solid,
+  // just outside the plot in the padding margin) on both axes -- reading a
+  // node's position as "about a quarter/half/three-quarters through" is
+  // the whole point, same as Xfer LFO Tool's own grid. Static regardless
+  // of the curve's shape, so this only needs to run once per inspector open.
+  function drawFxCurveGrid() {
+    fxCurveGridGroup.innerHTML = "";
+    const fracs = [0.25, 0.5, 0.75];
+    const tickLen = 5;
+    fracs.forEach(t => {
+      const x = t * FX_CURVE_W;
+      const line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("x1", x); line.setAttribute("x2", x);
+      line.setAttribute("y1", 0); line.setAttribute("y2", FX_CURVE_H);
+      line.setAttribute("class", "fx-curve-grid-line");
+      fxCurveGridGroup.appendChild(line);
+
+      const tick = document.createElementNS(SVG_NS, "line");
+      tick.setAttribute("x1", x); tick.setAttribute("x2", x);
+      tick.setAttribute("y1", FX_CURVE_H); tick.setAttribute("y2", FX_CURVE_H + tickLen);
+      tick.setAttribute("class", "fx-curve-tick");
+      fxCurveGridGroup.appendChild(tick);
+    });
+    fracs.forEach(v => {
+      const y = FX_CURVE_H - v * FX_CURVE_H;
+      const line = document.createElementNS(SVG_NS, "line");
+      line.setAttribute("y1", y); line.setAttribute("y2", y);
+      line.setAttribute("x1", 0); line.setAttribute("x2", FX_CURVE_W);
+      line.setAttribute("class", "fx-curve-grid-line");
+      fxCurveGridGroup.appendChild(line);
+
+      const tick = document.createElementNS(SVG_NS, "line");
+      tick.setAttribute("y1", y); tick.setAttribute("y2", y);
+      tick.setAttribute("x1", 0); tick.setAttribute("x2", -tickLen);
+      tick.setAttribute("class", "fx-curve-tick");
+      fxCurveGridGroup.appendChild(tick);
+    });
+  }
+
   function fxCurvePathD(nodes, segCurves) {
     const steps = 60;
     let d = "";
@@ -1450,6 +1518,7 @@
     curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
     curveEditorSegCurves = (clip.curve && clip.curve.curves) || fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
+    drawFxCurveGrid();
     drawFxCurve();
   }
 
@@ -1551,13 +1620,11 @@
     }
     const midT = (nodes[bestIdx].t + nodes[bestIdx + 1].t) / 2;
     const midV = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, midT, curveEditorSegCurves)));
+    // Splitting a segment resets its own bow (a single value can't
+    // represent two segments), but every other segment's bow is
+    // unaffected and must not be touched.
+    curveEditorSegCurves = fxSegCurvesAfterNodeAdd(curveEditorSegCurves, bestIdx);
     nodes.splice(bestIdx + 1, 0, { t: midT, v: midV });
-    // Splitting a segment resets any bow it had -- preserving it exactly
-    // would need re-deriving two new control values via Bezier
-    // subdivision, which only works cleanly if a control point can sit off
-    // its segment's midpoint (it can't, here); not worth the complexity
-    // for what should be a rare add-a-node-after-bowing edge case.
-    curveEditorSegCurves = fxDefaultSegCurves(nodes.length);
     selectedCurveNodeIndex = bestIdx + 1;
     drawFxCurve();
     commitCurveEdit();
@@ -1565,8 +1632,10 @@
 
   fxCurveDeleteNode.addEventListener("click", () => {
     if (!curveEditorClip || selectedCurveNodeIndex === null) return;
+    // Merging the two segments this node touches into one resets *that*
+    // segment to straight, but every other segment's bow carries over.
+    curveEditorSegCurves = fxSegCurvesAfterNodeDelete(curveEditorSegCurves, selectedCurveNodeIndex);
     curveEditorNodes.splice(selectedCurveNodeIndex, 1);
-    curveEditorSegCurves = fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
     commitCurveEdit();

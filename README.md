@@ -181,12 +181,21 @@ vertically (horizontal movement is ignored) to bow that one segment into
 a curve, LFO Tool-style, without needing separate off-curve tangent
 handles; `startCurveSegDrag` solves for the Bezier control value that
 puts the curve's own rendered midpoint (the point actually being dragged,
-not the abstract control point) under the pointer. Adding or deleting a
-node resets every segment's bow back to straight — preserving a bow
-through a resulting node-count change would need re-deriving control
-points via Bezier subdivision, which only works cleanly if a control
-point can sit off its segment's midpoint (it can't, here); not worth the
-complexity for what should be a rare edit-after-bowing case. Opening the
+not the abstract control point) under the pointer.
+
+Adding or deleting a node only resets the one segment directly involved,
+not the whole curve. Deleting a node merges the two segments it touches
+into a single new segment spanning the gap — that merged segment resets
+to straight (`fxSegCurvesAfterNodeDelete`), since a single bow value
+can't represent what were two independently-shaped segments, but every
+other segment's bow is untouched. Adding a node is the mirror case: it
+splits one segment into two new straight ones (`fxSegCurvesAfterNodeAdd`),
+again leaving every other segment alone. Preserving the exact shape
+through either change would need re-deriving control points via Bezier
+subdivision, which only works cleanly if a control point can sit off its
+segment's midpoint (it can't, here); not worth the complexity when the
+one segment actually being restructured resetting to straight is already
+the intuitive behavior. Opening the
 inspector on a clip with no custom curve only *previews* the default
 shape — nothing is written until an actual add/drag/delete/bow happens,
 so merely looking at a clip never silently converts it. Reset deletes
@@ -204,6 +213,13 @@ on every side for the same reason: a hit-circle centered right at the
 plot's edge (e.g. the default curve's locked `v=0` endpoints) would
 otherwise get silently clipped by the SVG's own overflow, shrinking
 exactly the touch target this exists to enlarge.
+
+Quarter grid lines (25/50/75%, faint) and matching tick marks (same
+positions, solid, just outside the plot in the padding margin) sit on
+both axes — reading a node as "about halfway through the section" at a
+glance, same as LFO Tool's own grid. Static regardless of the curve's
+shape, so `drawFxCurveGrid` only needs to run once per inspector open
+rather than on every drag frame the way `drawFxCurve` does.
 
 Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three
