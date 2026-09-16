@@ -692,6 +692,30 @@
     flex-shrink: 0;
   }
   .lib-tab.active { color: var(--pink); border-color: var(--pink); background: rgba(232,75,198,0.1); }
+  /* Sub-tab under Songs: what tapping a section previews (was its own
+     top-level Vocals/Inst tabs) -- visually one step down from the
+     primary tabs (smaller, no pill background) so the two levels read as
+     a hierarchy, not two rows of the same control. */
+  .library-subtabs {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    margin: -2px 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .library-subtabs.show { display: flex; }
+  .lib-subtab {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .lib-subtab.active { color: var(--text); background: var(--panel-2); }
   .song-header {
     display: flex;
     align-items: center;

@@ -268,11 +268,13 @@
     pushAnalyticsEvent("demo_interaction_started");
   }
 
-  // Songs/Vocals/Inst all browse the same song -> section structure; only
-  // the active tab changes what tapping a section previews (both stems /
-  // vocal only / beats only). Dragging into a lane is unaffected by the
-  // tab. Silence is a flat list, not part of the song browsing at all.
+  // Only Songs/Silence/FX are top-level tabs -- what used to be separate
+  // Vocals/Inst tabs is now a sub-tab under Songs (songPreviewMode) that
+  // only changes what tapping a section previews (both stems / vocal only
+  // / beats only); dragging into a lane is unaffected by either. Silence
+  // and FX are flat lists, not part of the song browsing at all.
   let activeLibraryTab = "songs";
+  let songPreviewMode = "original";
   // At most one song's sections are exposed at a time -- expanding a
   // different song collapses whichever one was open.
   let expandedSongId = null;
@@ -335,6 +337,7 @@
   const fxCurveReset = document.getElementById("fxCurveReset");
   const songLibrary = document.getElementById("songLibrary");
   const libraryTabs = document.getElementById("libraryTabs");
+  const librarySubtabs = document.getElementById("librarySubtabs");
   const exportWavBtn = document.getElementById("exportWavBtn");
   const exportMp3Btn = document.getElementById("exportMp3Btn");
   const titleInput = document.getElementById("titleInput");
@@ -525,21 +528,28 @@
     cancelActiveGesture = cleanup;
   });
 
-  // ---------- Library (tabbed: Songs / Vocals / Inst / Silence) ----------
-  function previewModeForTab(tab) {
-    return tab === "vocals" ? "vocal" : tab === "inst" ? "beats" : "both";
+  // ---------- Library (tabbed: Songs / Silence / FX) ----------
+  // songPreviewMode is stored as the actual preview mode ("vocal"/"beats")
+  // except for the default, stored as "original" since that's a distinct
+  // concept from "both" everywhere else it's user-facing -- but reconstructing
+  // the original full mix from both stems is exactly what mode "both" means
+  // to togglePreview/scheduleVocal/scheduleBeats, so this is the one place
+  // that translation happens.
+  function songPreviewModeToMode() {
+    return songPreviewMode === "original" ? "both" : songPreviewMode;
   }
 
   function renderLibrary() {
     if (previewChipEl) stopPreview(); // clear any preview tied to a chip we're about to remove
     songLibrary.innerHTML = "";
+    librarySubtabs.classList.toggle("show", activeLibraryTab === "songs");
 
     if (activeLibraryTab === "silence") {
-      // No song-header banner here, unlike Songs/Vocals/Inst/FX -- those
-      // rows are themselves the tap-to-expand control. Silence has nothing
-      // to expand (it isn't tied to a song or effect with variants to
-      // drill into), so the duration chips are the only thing on this tab
-      // and just show immediately.
+      // No song-header banner here, unlike Songs/FX -- those rows are
+      // themselves the tap-to-expand control. Silence has nothing to
+      // expand (it isn't tied to a song or effect with variants to drill
+      // into), so the duration chips are the only thing on this tab and
+      // just show immediately.
       const silRow = document.createElement("div");
       silRow.className = "chip-row";
       SILENCE_OPTIONS.forEach(sec => silRow.appendChild(makeChip(sec, "", "both", false)));
@@ -556,7 +566,7 @@
       return;
     }
 
-    const mode = previewModeForTab(activeLibraryTab);
+    const mode = songPreviewModeToMode();
     SONGS.forEach(song => {
       songLibrary.appendChild(
         song.id === expandedSongId ? buildExpandedSongRow(song, mode) : buildSongSummaryRow(song)
@@ -699,6 +709,14 @@
     activeLibraryTab = btn.dataset.tab;
     libraryTabs.querySelectorAll(".lib-tab").forEach(b => b.classList.toggle("active", b === btn));
     renderLibrary();
+  });
+
+  librarySubtabs.addEventListener("click", (e) => {
+    const btn = e.target.closest(".lib-subtab");
+    if (!btn || btn.classList.contains("active")) return;
+    songPreviewMode = btn.dataset.submode;
+    librarySubtabs.querySelectorAll(".lib-subtab").forEach(b => b.classList.toggle("active", b === btn));
+    renderLibrary(); // expandedSongId is untouched -- switching preview mode shouldn't collapse whichever song is open
   });
 
   // ---------- Drag-and-drop from library into timeline ----------

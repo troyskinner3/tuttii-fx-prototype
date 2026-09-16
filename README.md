@@ -288,9 +288,15 @@ design spec and decision log.
   independently, compacted so ~2 songs are visible on a phone screen).
   Since revisited with a deeper fidelity pass: pill chevrons, custom
   volume slider, redesigned inspector, and the library rebuilt as a real
-  Songs/Vocals/Inst/Silence tab structure (tap a song to expose its
-  sections in place, tab controls what previewing plays) — matching the
-  production app's actual structure, not just its colors.
+  tab structure (tap a song to expose its sections in place) — matching
+  the production app's actual structure, not just its colors. Top-level
+  tabs are now just Songs/Silence/FX; Vocals/Inst started as their own
+  top-level tabs but were folded into a Songs sub-tab (Original/Vocals/
+  Instrumental, defaulting to Original) that only changes what tapping a
+  section previews — three tabs whose sole difference was "what does a
+  tap play" didn't earn separate top-level billing, and the same
+  sub-tab pattern is intended to extend to FX once its library grows
+  past the current 5 effect types.
 - **Pass 2 (real audio wired for 2 of 3 songs):** placeholder oscillator
   audio replaced with real stem playback for real songs, alongside the
   original two synth demo songs (Neon Drive, Afterglow), which are
