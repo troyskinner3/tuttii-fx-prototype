@@ -62,26 +62,20 @@ Three effect types exist so far:
 
 - **High Pass** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
   (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
-  too much of the mix to still read as musical) over the clip's duration,
-  then ramps back to 20Hz in the final ~15ms so it doesn't leave the next
-  section filtered. A hard instant reset was considered and rejected — an
-  instantaneous filter-coefficient jump risks a click even though the
-  signal itself is already near-silent up there; the brief ramp avoids
-  that while still reading as a snap.
+  too much of the mix to still read as musical) over the clip's curve,
+  ending back at 20Hz so it doesn't leave the next section filtered — see
+  "Custom curves" below for how that end-at-neutral guarantee actually
+  works and how the curve's shape is user-editable.
 - **Low Pass** (2/4/8/16-bar variants): the mirror image — cutoff
   sweeps from 20kHz (neutral) down to 20Hz (the classic DJ "breakdown,"
   where going all the way to near-total muffling is the point, unlike high
-  pass's pulled-back peak) then resets back up to 20kHz.
+  pass's pulled-back peak) and back up to 20kHz.
 
-  Neither sweep is a plain exponential — `curvePower` (currently 3 for
-  both) reshapes the rise so most of the audible change happens in roughly
-  the last fifth of the sweep instead of spreading evenly, reading as a
-  sudden kick near the end rather than a steady climb. Scheduled as a
-  chain of ~24 short `exponentialRampToValueAtTime` segments sampled off
-  that shaped curve (`fxExpShapedValueAt`), since the native API alone
-  only produces a constant-ratio (plain exponential) ramp. Both effects
-  share this same scheduling code (`scheduleFxSweep`) parameterized by
-  `fromHz`/`toHz`/`curvePower` off the `FX_EFFECTS` entry.
+  Both share the same scheduling code (`scheduleFxSweep`/`fxExpShapedValueAt`)
+  parameterized by `fromHz`/`toHz` off the `FX_EFFECTS` entry — chained as
+  ~48 short `exponentialRampToValueAtTime` segments sampled off the
+  clip's curve, since the native API alone only produces a constant-ratio
+  (plain exponential) ramp between two points, not an arbitrary shape.
 - **Phaser** (2/4/8/16-bar variants): Web Audio has no native phaser
   node, so it's built from primitives — 6 series `allpass` `BiquadFilterNode`s
   (`stages`), all modulated in phase by one shared LFO (a 0.3Hz sine
@@ -124,39 +118,64 @@ documented above, in the FX lane paragraphs.
 
 Tapping an FX clip opens the shared inspector (same one Vocal/Beats
 clips use), which for an FX clip shows a curve editor instead of the
-volume row: a single cubic bezier segment with two draggable handles,
-endpoints fixed at (0,0) and (1,1). That's the anchoring guardrail — the
-user can bend the path into almost any shape, but can't unlock the start
-or end away from neutral, which is exactly what would let an effect leave
-the next section subtly (or not so subtly) mis-filtered. The reset tail
-(the brief snap back to neutral at the very end of the clip, described
-above) sits *after* this curve and isn't user-editable at all, for the
-same reason.
+volume row (and hides the generic move/trim hint text below it, which
+described Vocal/Beats' handles and read as confusingly misattributed to
+the curve above it once this editor existed). Modeled on Xfer's LFO Tool
+(the explicit reference) rather than a Bezier/tangent-handle editor: any
+number of draggable point-nodes, connected by one smooth spline, each
+node literally sitting on the curve rather than pulling at it from off
+the path. The two end nodes are permanently fixed at value 0 (locked
+position, no pointer handler at all — not draggable, not selectable, not
+deletable). That lock *is* the entire "always resets cleanly" guarantee:
+earlier this needed a separate hardcoded short ramp bolted onto the end
+of the curve; with both ends pinned to neutral, the curve itself carries
+that guarantee, and the user fully controls how gradually or sharply it
+gets there for everything in between.
 
-The data model stays deliberately thin: `clip.curve`, when present, is
-just `{p1x, p1y, p2x, p2y}` — the two handle positions. `fxCurveFracAt`
-is the single point where the FX engine decides between that and the
-procedural default (`Math.pow(linFrac, curvePower)`); both
-`fxExpShapedValueAt` and `fxLinearShapedValueAt` call it, so a custom
-curve automatically applies wherever the default curve already did —
-including a washout's two simultaneously-curved parameters (dry/wet and
-its companion highpass), which both read the same `clip.curve`. Bezier
-evaluation (`cubicBezierY`) uses the same Newton-Raphson solve-then-evaluate
-technique browsers use internally for CSS's `cubic-bezier()` timing
-functions, constraining handle x to `[0,1]` so the curve stays a
-well-defined function of time (no folding back on itself).
+The data model stays thin: `clip.curve`, when present, is
+`{nodes: [{t,v}, ...]}`, sorted by time. The default is three nodes —
+`{t:0,v:0}`, `{t:0.85,v:1}`, `{t:1,v:0}` — peaking near the end to
+resemble the old procedural curve's character, but the middle node is a
+completely ordinary, fully-draggable node like any other; there's nothing
+special about it in the data. `fxCurveFracAt` is the single point where
+the FX engine decides between a clip's custom nodes and the default,
+evaluated via a cubic Hermite spline with Catmull-Rom tangents
+(`fxCurveValueAtT`/`fxHermiteSegment`/`fxNodeTangent`) — smooth,
+C1-continuous, and passes exactly through every node without needing a
+separate tangent handle per node. Both `fxExpShapedValueAt` and
+`fxLinearShapedValueAt` call through it, so a custom curve applies
+wherever the default did, including a washout's two simultaneously-curved
+parameters. One consequence worth knowing: a Hermite spline can briefly
+overshoot past a sharp node (e.g. a steep "triangle" shape) before
+settling back — `fxCurveFracAt` clamps to `[0,1]`, since the downstream
+Hz/wet math assumes that range.
 
-Opening the inspector on a clip with no custom curve just *previews* the
-default shape approximated as bezier handles (`fxDefaultCurveHandles`) —
-looking at a clip never silently converts it. `clip.curve` is only
-actually created the moment a handle is first dragged, and the editor's
-own Reset button (`fxCurveReset`) deletes it again, reverting to the
-procedural default. Both go through the normal undo/redo history like any
-other clip edit.
+Add (+) inserts a new node into the current largest gap, sitting right on
+the curve's existing value there so adding one never itself changes the
+shape until it's dragged. Tapping a node selects it (a second tap
+deselects); the delete button is enabled only while a deletable
+(non-endpoint) node is selected. Dragging a node keeps its time coordinate
+clamped between its immediate neighbors, so nodes can't cross over each
+other and leave "the curve" ambiguous at some instant. Opening the
+inspector on a clip with no custom curve only *previews* the default
+shape — nothing is written until an actual add/drag/delete happens, so
+merely looking at a clip never silently converts it. Reset deletes
+`clip.curve` entirely, reverting to the procedural default. All three
+(add, drag, delete, reset) go through the normal undo/redo history like
+any other clip edit.
 
-Delete already worked for FX clips before this (the inspector's shared
-duplicate/delete icons are generic across all three lanes) — it just
-wasn't obvious it was there, which is why this section exists at all.
+Scope note: this is one smooth spline shared across every node, not
+independently-adjustable curvature per segment the way LFO Tool actually
+offers (where each segment between two nodes has its own tension
+control). Moving one node mostly reshapes its two adjacent segments, with
+a smaller ripple one segment further in each direction — a reasonable v1
+proxy for the real thing, extendable later if true per-segment tension
+control turns out to matter.
+
+Delete already worked for FX clips before this curve editor existed (the
+inspector's shared duplicate/delete icons are generic across all three
+lanes) — it just wasn't obvious it was there, which is part of why this
+whole panel exists.
 
 # Tuttii Mini Editor
 

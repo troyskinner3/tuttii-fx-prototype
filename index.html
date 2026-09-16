@@ -142,21 +142,25 @@
     <div class="fx-curve-editor" id="fxCurveEditor">
       <div class="fx-curve-head">
         <span class="fx-curve-label">Curve</span>
-        <button class="fx-curve-reset" id="fxCurveReset" title="Reset to default curve">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 16v-4h4"/></svg>
-          Reset
-        </button>
+        <div class="fx-curve-actions">
+          <button class="fx-curve-action-btn" id="fxCurveAddNode" title="Add a node">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="fx-curve-action-btn delete" id="fxCurveDeleteNode" title="Delete selected node" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>
+          </button>
+          <span class="insp-divider"></span>
+          <button class="fx-curve-reset" id="fxCurveReset" title="Reset to default curve">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 16v-4h4"/></svg>
+            Reset
+          </button>
+        </div>
       </div>
       <svg class="fx-curve-svg" id="fxCurveSvg" viewBox="0 0 200 120" preserveAspectRatio="none">
-        <line class="fx-curve-guide" id="fxGuide1" x1="0" y1="120" x2="0" y2="120" />
-        <line class="fx-curve-guide" id="fxGuide2" x1="200" y1="0" x2="200" y2="0" />
         <path class="fx-curve-path" id="fxCurvePath" d="" />
-        <circle class="fx-curve-anchor" cx="0" cy="120" r="4" />
-        <circle class="fx-curve-anchor" cx="200" cy="0" r="4" />
-        <circle class="fx-curve-handle" id="fxHandle1" cx="0" cy="120" r="7" />
-        <circle class="fx-curve-handle" id="fxHandle2" cx="200" cy="0" r="7" />
+        <g id="fxCurveNodesGroup"></g>
       </svg>
-      <p class="fx-curve-hint">Drag either point to reshape the curve. Start and end are locked so the effect always resets cleanly.</p>
+      <p class="fx-curve-hint">Tap + to add a node, drag to reshape, tap a node then − to remove it. Start and end are locked at zero so the effect always resets cleanly.</p>
     </div>
     <p class="hint">Drag the middle to move it. Drag either edge to trim — pull past the section's original end to extend it.</p>
   </div>

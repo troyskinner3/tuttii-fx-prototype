@@ -559,6 +559,10 @@
   .vol-row input[type=range]::-moz-range-track { background: transparent; }
   .vol-row .vol-val { font-size: 12.5px; color: var(--text-dim); width: 38px; text-align: right; }
   .hint { font-size: 11px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+  /* This hint is accurate for Vocal/Beats (what it describes) but sits
+     directly under the curve editor for FX clips, reading as if it were
+     describing the curve itself -- just not relevant there. */
+  .inspector.fx-clip .hint { display: none; }
 
   /* FX curve editor -- shown only for FX clips (see .inspector.fx-clip),
      in place of the volume row those clips have no use for. */
@@ -577,6 +581,23 @@
     text-transform: uppercase;
     color: var(--text-dim);
   }
+  .fx-curve-actions { display: flex; align-items: center; gap: 10px; }
+  .fx-curve-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    padding: 0;
+  }
+  .fx-curve-action-btn svg { width: 12px; height: 12px; }
+  .fx-curve-action-btn.delete { color: #FF7A9C; }
+  .fx-curve-action-btn:disabled { opacity: 0.35; cursor: default; }
   .fx-curve-reset {
     display: flex;
     align-items: center;
@@ -599,16 +620,16 @@
     border-radius: 12px;
     touch-action: none;
   }
-  .fx-curve-guide { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; }
   .fx-curve-path { fill: none; stroke: var(--amber); stroke-width: 2.5; }
-  .fx-curve-anchor { fill: var(--text-dim); }
-  .fx-curve-handle {
+  .fx-curve-node {
     fill: var(--amber);
     stroke: var(--ink-2);
     stroke-width: 2;
     cursor: grab;
   }
-  .fx-curve-handle:active { cursor: grabbing; }
+  .fx-curve-node:active { cursor: grabbing; }
+  .fx-curve-node.anchor { fill: var(--text-dim); cursor: default; }
+  .fx-curve-node.selected { stroke: var(--text); }
   .fx-curve-hint { font-size: 10.5px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.5; }
 
   /* Library */
