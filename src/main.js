@@ -1342,7 +1342,9 @@
   // negative-width segment) during a drag, not a UX distance in itself,
   // so it stays tiny: a fraction-space floor this small is already an
   // absolute time far below anything perceptible, at any clip length.
-  const FX_CURVE_MIN_NODE_GAP = 0.002;
+  // Kept below FX_DEFAULT_DROP_SEC's own smallest resulting fraction (on
+  // the longest, 16-bar clip) so this floor never overrides that target.
+  const FX_CURVE_MIN_NODE_GAP = 0.0004;
   // The default curve's peak node sits this many seconds before the end
   // node, converted to a fraction of *this* clip's duration -- not a
   // fixed fraction like FX_CURVE_MIN_NODE_GAP above, because a fixed
@@ -1350,11 +1352,11 @@
   // this used exactly that, pinning the node to the closest position the
   // drag clamp allowed -- fine at 4s but a noticeably slow ~320ms drop at
   // 32s). A fixed absolute duration is what the old hardcoded reset ramp
-  // this curve model replaced actually had (~15ms); 100ms carries over
-  // that "reads as a snap, not a ramp" intent with a little more headroom,
-  // since this one has to stay visible and draggable rather than being
-  // purely internal.
-  const FX_DEFAULT_DROP_SEC = 0.1;
+  // this curve model replaced actually had (~15ms); 20ms carries that
+  // "reads as a snap, not a ramp" intent forward almost exactly, with
+  // just enough headroom over the original figure to stay a real,
+  // schedulable ramp rather than an instant step.
+  const FX_DEFAULT_DROP_SEC = 0.02;
   const SVG_NS = "http://www.w3.org/2000/svg";
   let curveEditorClip = null;
   let curveEditorNodes = null;

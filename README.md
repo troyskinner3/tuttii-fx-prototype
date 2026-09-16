@@ -138,7 +138,7 @@ The data model stays thin: `clip.curve`, when present, is
 segment, `curves.length === nodes.length - 1`), sorted by time. The
 default is three nodes — `{t:0,v:0}`, a peak node, `{t:1,v:0}` — rising
 across essentially the whole clip to a peak that sits `FX_DEFAULT_DROP_SEC`
-(100ms) before the end node, so the two connect with a short, sharp drop
+(20ms) before the end node, so the two connect with a short, sharp drop
 read as a sudden kick-and-release rather than a gradual climb-and-fall.
 That's a fixed *absolute* duration, deliberately — an earlier version
 placed the peak at the closest position the drag clamp allowed
@@ -148,8 +148,12 @@ absolute duration scales with the clip: fine (~40ms) at 4s, a
 noticeably slow ~320ms at 32s. Carrying over the spirit of the fixed
 ~15ms reset ramp this curve model replaced needed an actual fixed
 duration, converted to whatever fraction that is for *this* clip's
-length — 100ms reads the same regardless of whether the clip is 2 bars
-or 16. The middle node is a completely ordinary, fully-draggable node
+length — 20ms (close to that original ~15ms, with just enough headroom
+to stay a real, schedulable ramp) reads the same regardless of whether
+the clip is 2 bars or 16; `FX_CURVE_MIN_NODE_GAP` is kept below the
+fraction that works out to on the longest (16-bar) clip specifically so
+it never overrides the target there. The middle node is a completely
+ordinary, fully-draggable node
 like any other, repositionable in both time and value from the moment
 the inspector opens — even before any custom curve has actually been
 committed — and dragging it left, say, turns the shape into a triangle.
@@ -178,9 +182,9 @@ Scheduling reproduces the curve via `fxCurveScheduleBreakpoints`, which
 walks the node list directly rather than sampling at a fixed count across
 the whole clip (an earlier version did exactly that, at 48 samples — the
 default curve's peak-pressed-near-the-end shape is what exposed it as
-wrong: on a 32s clip, 48 even samples land ~0.7s apart, coarser than the
-curve's own ~100ms final segment, so the schedule never actually reached
-the peak or reproduced the real drop duration). A straight segment gets
+wrong: on a 32s clip, 48 even samples land ~0.7s apart, vastly coarser
+than the curve's own 20ms final segment, so the schedule never actually
+reached the peak or reproduced the real drop duration). A straight segment gets
 exactly one checkpoint, at its own end node, and that's not an
 approximation to trim down — it's exact: within a straight segment the
 curve fraction is affine in time, so Hz (`fromHz*(toHz/fromHz)^frac`,
