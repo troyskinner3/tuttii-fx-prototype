@@ -105,6 +105,8 @@
     { id: "sil-1", label: "Silence", durBars: 1, isSilence: true },
     { id: "sil-2", label: "Silence", durBars: 2, isSilence: true },
     { id: "sil-4", label: "Silence", durBars: 4, isSilence: true },
+    { id: "sil-8", label: "Silence", durBars: 8, isSilence: true },
+    { id: "sil-16", label: "Silence", durBars: 16, isSilence: true },
   ];
 
   const SONGS = [
@@ -533,17 +535,11 @@
     songLibrary.innerHTML = "";
 
     if (activeLibraryTab === "silence") {
-      const silHeader = document.createElement("div");
-      silHeader.className = "song-header";
-      silHeader.innerHTML = `
-        <div class="song-thumb silence-thumb">🔇</div>
-        <div class="song-info">
-          <div class="song-title">Silence</div>
-          <div class="song-sub">Add a deliberate pause</div>
-        </div>
-      `;
-      songLibrary.appendChild(silHeader);
-
+      // No song-header banner here, unlike Songs/Vocals/Inst/FX -- those
+      // rows are themselves the tap-to-expand control. Silence has nothing
+      // to expand (it isn't tied to a song or effect with variants to
+      // drill into), so the duration chips are the only thing on this tab
+      // and just show immediately.
       const silRow = document.createElement("div");
       silRow.className = "chip-row";
       SILENCE_OPTIONS.forEach(sec => silRow.appendChild(makeChip(sec, "", "both", false)));

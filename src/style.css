@@ -703,10 +703,6 @@
     flex-shrink: 0;
     object-fit: cover;
   }
-  .song-thumb.silence-thumb {
-    background: repeating-linear-gradient(45deg, rgba(255,255,255,0.06), rgba(255,255,255,0.06) 5px, rgba(255,255,255,0.13) 5px, rgba(255,255,255,0.13) 10px);
-    border: 1px solid var(--border);
-  }
   .song-thumb.fx-thumb {
     background: linear-gradient(135deg, var(--amber), #C77D0E);
   }
