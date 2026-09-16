@@ -2434,25 +2434,55 @@
     scheduledNodes = [];
   }
 
+  // True for the entire time a play() call is waiting on the real audio
+  // network fetch + decode (see the loading state below) -- guards against
+  // a second tap during that window queuing up a whole separate play()
+  // run (the button doesn't flip to a pause icon, and thus doesn't look
+  // pressed, until scheduling actually happens), which would otherwise
+  // race the first one's stopAllNodes()/scheduling against its own.
+  let playStarting = false;
+
   async function play() {
+    if (playStarting) return;
     const hasClips = clips.vocal.length > 0 || clips.beats.length > 0;
     if (hasClips) {
       trackFirstInteraction();
       pushAnalyticsEvent("demo_play_pressed");
     }
 
-    const ctx = await ensureAudioReady();
-
     // A real clip whose matched audio hasn't finished loading yet would
     // otherwise schedule nothing at all for it, silently (scheduleRealClip
     // just no-ops without a buffer) -- wait for whatever's actually on the
-    // timeline right now rather than assuming it's ready.
+    // timeline right now rather than assuming it's ready. On a first press
+    // for a song that hasn't been preloaded yet (or hasn't finished -- the
+    // fetch is kicked off at drop time, but a slow/mobile connection can
+    // easily outlast however long the user spent arranging clips before
+    // hitting Play), this is a real network fetch + decode, not something
+    // any amount of local optimization shortens -- so the button shows a
+    // spinner for it rather than just sitting there looking unresponsive.
     const songIds = new Set([...clips.vocal, ...clips.beats, ...clips.fx].map(c => c.songId).filter(Boolean));
-    await Promise.all([...songIds].map(id => {
+    const alreadyLoaded = [...songIds].every(id => {
       const song = SONGS.find(s => s.id === id);
-      return song ? preloadMatched(song).catch(() => {}) : null;
-    }));
+      return song && song._matched.state === "ready";
+    });
+    if (!alreadyLoaded) {
+      playStarting = true;
+      playBtn.classList.add("loading");
+    }
+    try {
+      const ctx = await ensureAudioReady();
+      await Promise.all([...songIds].map(id => {
+        const song = SONGS.find(s => s.id === id);
+        return song ? preloadMatched(song).catch(() => {}) : null;
+      }));
+      await playScheduled(ctx);
+    } finally {
+      playStarting = false;
+      playBtn.classList.remove("loading");
+    }
+  }
 
+  async function playScheduled(ctx) {
     stopAllNodes();
     const end = timelineEndBars();
     if (playheadBar >= end) playheadBar = 0;

@@ -453,6 +453,9 @@
     box-shadow: 0 4px 18px rgba(232,75,198,0.45);
   }
   .play-btn svg { width: 20px; height: 20px; fill: white; }
+  .play-btn.loading { opacity: 0.75; pointer-events: none; }
+  .play-btn.loading svg { animation: fx-play-loading-spin 0.9s linear infinite; }
+  @keyframes fx-play-loading-spin { to { transform: rotate(360deg); } }
   .locate-btn {
     width: 28px; height: 28px;
     border-radius: 50%;

@@ -335,6 +335,19 @@ design spec and decision log.
   (same content, git-deduped so no extra data) at a top-level `audio/`
   for GitHub Pages' raw-tree serving — see below.
 
+  **Play button felt unresponsive on a slow first press.** `play()`
+  already awaited a song's matched pair before scheduling anything (so a
+  clip never silently played nothing), but gave no feedback while doing
+  so — on a real device over a real connection that wait is genuinely
+  several seconds (that ~6.5MB, ~3.4-minute matched pair above, fetched
+  and decoded in full to play what might be one 8-bar, ~16-second clip —
+  the tradeoff this file already documents, not a bug), and the button
+  just sat there looking broken. It now spins while waiting (`.play-btn
+  .loading`, driven by a `playStarting` flag) and ignores a second tap
+  during that window — without the guard, a double-tap while still
+  loading would call `play()` twice concurrently, and the two calls'
+  `stopAllNodes()`/scheduling could race each other.
+
   **Playback pauses on edit.** Editing the timeline (drop, move, trim,
   duplicate, delete, volume, undo, redo) while playback is running used
   to leave audio playing against a stale snapshot of the timeline, out
