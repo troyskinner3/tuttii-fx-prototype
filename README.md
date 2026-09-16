@@ -122,9 +122,9 @@ volume row (and hides the generic move/trim hint text below it, which
 described Vocal/Beats' handles and read as confusingly misattributed to
 the curve above it once this editor existed). Modeled on Xfer's LFO Tool
 (the explicit reference) rather than a Bezier/tangent-handle editor: any
-number of draggable point-nodes, connected by one smooth spline, each
-node literally sitting on the curve rather than pulling at it from off
-the path. The two end nodes are permanently fixed at value 0 (locked
+number of draggable point-nodes, connected by straight lines, each node
+literally sitting on the curve rather than pulling at it from off the
+path. The two end nodes are permanently fixed at value 0 (locked
 position, no pointer handler at all — not draggable, not selectable, not
 deletable). That lock *is* the entire "always resets cleanly" guarantee:
 earlier this needed a separate hardcoded short ramp bolted onto the end
@@ -134,20 +134,22 @@ gets there for everything in between.
 
 The data model stays thin: `clip.curve`, when present, is
 `{nodes: [{t,v}, ...]}`, sorted by time. The default is three nodes —
-`{t:0,v:0}`, `{t:0.85,v:1}`, `{t:1,v:0}` — peaking near the end to
-resemble the old procedural curve's character, but the middle node is a
-completely ordinary, fully-draggable node like any other; there's nothing
-special about it in the data. `fxCurveFracAt` is the single point where
-the FX engine decides between a clip's custom nodes and the default,
-evaluated via a cubic Hermite spline with Catmull-Rom tangents
-(`fxCurveValueAtT`/`fxHermiteSegment`/`fxNodeTangent`) — smooth,
-C1-continuous, and passes exactly through every node without needing a
-separate tangent handle per node. Both `fxExpShapedValueAt` and
-`fxLinearShapedValueAt` call through it, so a custom curve applies
-wherever the default did, including a washout's two simultaneously-curved
-parameters. One consequence worth knowing: a Hermite spline can briefly
-overshoot past a sharp node (e.g. a steep "triangle" shape) before
-settling back — `fxCurveFracAt` clamps to `[0,1]`, since the downstream
+`{t:0,v:0}`, `{t:0.92,v:1}`, `{t:1,v:0}` — rising across most of the clip
+to a peak that sits close to the end node, so the two connect with a
+short, steep, near-vertical drop (a sudden kick-and-release rather than a
+gradual climb-and-fall). The middle node is a completely ordinary,
+fully-draggable node like any other, repositionable in both time and
+value from the moment the inspector opens — even before any custom curve
+has actually been committed — and dragging it left, say, turns the shape
+into a triangle. `fxCurveFracAt` is the single point where the FX engine
+decides between a clip's custom nodes and the default, evaluated via
+plain linear interpolation between consecutive nodes (`fxCurveValueAtT`)
+— LFO Tool's own default for a segment with no tension applied. Both
+`fxExpShapedValueAt` and `fxLinearShapedValueAt` call through it, so a
+custom curve applies wherever the default did, including a washout's two
+simultaneously-curved parameters. Because segments are straight lines
+between 0..1 nodes, the curve fraction itself never overshoots outside
+`[0,1]` — `fxCurveFracAt` still clamps defensively, since the downstream
 Hz/wet math assumes that range.
 
 Add (+) inserts a new node into the current largest gap, sitting right on
@@ -164,13 +166,14 @@ merely looking at a clip never silently converts it. Reset deletes
 (add, drag, delete, reset) go through the normal undo/redo history like
 any other clip edit.
 
-Scope note: this is one smooth spline shared across every node, not
+Scope note: every segment is a plain straight line for now, not
 independently-adjustable curvature per segment the way LFO Tool actually
-offers (where each segment between two nodes has its own tension
-control). Moving one node mostly reshapes its two adjacent segments, with
-a smaller ripple one segment further in each direction — a reasonable v1
-proxy for the real thing, extendable later if true per-segment tension
-control turns out to matter.
+offers (where each segment between two nodes has its own tension handle
+you can drag to bow it into a curve). Moving one node only ever reshapes
+the two segments touching it, never further out — a reasonable v1 proxy
+for the real thing, planned as a v2 addition (per-segment tension
+control, likely via a midpoint handle on each segment) once it's worth
+the added interaction surface.
 
 Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three

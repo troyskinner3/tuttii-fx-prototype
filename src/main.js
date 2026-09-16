@@ -1315,13 +1315,14 @@
 
   // ---------- FX curve editor ----------
   // LFO-drawing-tool style: any number of draggable nodes (Xfer LFO Tool
-  // was the explicit reference), connected by one smooth spline
-  // (fxCurveValueAtT) rather than straight lines. The two end nodes are
-  // fixed at (0,0)/(1,1) -- not draggable, not deletable, no pointer
-  // handler at all -- everything else is freely addable, draggable, and
-  // deletable. curveEditorNodes/curveEditorClip/selectedCurveNodeIndex
-  // track the editor's live, uncommitted state; nothing writes to
-  // clip.curve until an actual edit happens (see commitCurveEdit).
+  // was the explicit reference), connected by straight lines
+  // (fxCurveValueAtT) -- LFO Tool's own default for an un-tensioned
+  // segment. The two end nodes are fixed at t=0/t=1, v=0 -- not draggable,
+  // not deletable, no pointer handler at all -- everything else is freely
+  // addable, draggable, and deletable. curveEditorNodes/curveEditorClip/
+  // selectedCurveNodeIndex track the editor's live, uncommitted state;
+  // nothing writes to clip.curve until an actual edit happens (see
+  // commitCurveEdit).
   const FX_CURVE_W = 200, FX_CURVE_H = 120; // matches fxCurveSvg's viewBox
   const SVG_NS = "http://www.w3.org/2000/svg";
   let curveEditorClip = null;
@@ -1740,7 +1741,7 @@
   // BiquadFilterNode doubles as both). A phaser needs several internal
   // nodes (an allpass chain, a shared LFO, a dry/wet crossfade), so it
   // exposes its own external input/output gain nodes instead.
-  const FX_CURVE_SEGMENTS = 48; // exponential/linearRampToValueAtTime alone are each only a straight curve; chaining this many short ramps through shaped checkpoints approximates the spline below (now spanning the whole clip, not just a rise phase, so more segments than before)
+  const FX_CURVE_SEGMENTS = 48; // exponentialRampToValueAtTime is only a constant-ratio curve even though the node curve's segments are straight lines in fraction-space (e.g. Hz still moves exponentially within a segment); chaining this many short ramps through sampled checkpoints approximates it (now spanning the whole clip, not just a rise phase, so more segments than before)
 
   // ---------- FX custom curves ----------
   // A clip's whole-duration shape (0..1 time in, 0..1 value out) is either
@@ -1755,47 +1756,39 @@
   // itself let it be removed) -- the user fully controls how gradually or
   // sharply the effect gets back to neutral, just not whether it does.
   function fxDefaultCurveNodes() {
-    // Peak near the end (t=0.85), matching the old default power curve's
-    // "stays low, kicks up near the end, then snaps back" character, now
-    // expressed as one shape spanning the whole clip instead of a rise
-    // phase plus a separate short fixed tail.
-    return [{ t: 0, v: 0 }, { t: 0.85, v: 1 }, { t: 1, v: 0 }];
+    // Rises across most of the clip to a peak sitting close to the end
+    // node, so the two connect with a short, steep, near-vertical drop --
+    // matching Xfer LFO Tool's default straight-line segments (a node's
+    // segment is only curved once you give it tension, which is a v2
+    // feature here) and reading as a sudden kick-and-release rather than a
+    // gradual climb-and-fall.
+    return [{ t: 0, v: 0 }, { t: 0.92, v: 1 }, { t: 1, v: 0 }];
   }
 
-  // Catmull-Rom-style tangent at nodes[i]: average slope to its immediate
-  // neighbors (or its one available neighbor, at an endpoint). Used as a
-  // cubic Hermite spline's tangents so the curve passes exactly through
-  // every node -- moving one node reshapes the ~2 segments touching it
-  // without needing a separate handle per node.
-  function fxNodeTangent(nodes, i) {
-    const prev = nodes[Math.max(0, i - 1)];
-    const next = nodes[Math.min(nodes.length - 1, i + 1)];
-    const dt = next.t - prev.t;
-    return dt > 0 ? (next.v - prev.v) / dt : 0;
-  }
-  function fxHermiteSegment(nodes, i, t) {
-    const p0 = nodes[i], p1 = nodes[i + 1];
-    const dt = p1.t - p0.t;
-    const m0 = fxNodeTangent(nodes, i) * dt;
-    const m1 = fxNodeTangent(nodes, i + 1) * dt;
-    const u = dt > 0 ? (t - p0.t) / dt : 0;
-    const u2 = u * u, u3 = u2 * u;
-    const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
-    return h00 * p0.v + h10 * m0 + h01 * p1.v + h11 * m1;
-  }
+  // Straight-line (linear) interpolation between consecutive nodes -- the
+  // LFO Tool default of an un-tensioned segment. Per-segment curve/tension
+  // handles (bowing a segment instead of it being a straight line) are a
+  // planned v2 addition; for now every segment is a plain line, so moving a
+  // node only ever reshapes the two segments touching it, never its
+  // neighbors further out.
   function fxCurveValueAtT(nodes, t) {
     if (t <= nodes[0].t) return nodes[0].v;
     if (t >= nodes[nodes.length - 1].t) return nodes[nodes.length - 1].v;
     for (let i = 0; i < nodes.length - 1; i++) {
-      if (t <= nodes[i + 1].t) return fxHermiteSegment(nodes, i, t);
+      const p0 = nodes[i], p1 = nodes[i + 1];
+      if (t <= p1.t) {
+        const dt = p1.t - p0.t;
+        const u = dt > 0 ? (t - p0.t) / dt : 0;
+        return p0.v + (p1.v - p0.v) * u;
+      }
     }
     return nodes[nodes.length - 1].v;
   }
   // The single point where a custom curve (if any) actually takes over
   // from the default -- everywhere else in the FX engine goes through
   // fxExpShapedValueAt/fxLinearShapedValueAt, which both call this. Clamped
-  // because a Hermite spline can briefly overshoot past a sharp node (e.g.
-  // a "triangle" shape) -- downstream math assumes 0..1.
+  // defensively even though straight-line segments between 0..1 nodes never
+  // overshoot on their own.
   function fxCurveFracAt(clip, linFrac) {
     const nodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
     return Math.min(1, Math.max(0, fxCurveValueAtT(nodes, linFrac)));
