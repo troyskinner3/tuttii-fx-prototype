@@ -71,11 +71,12 @@ Three effect types exist so far:
   where going all the way to near-total muffling is the point, unlike high
   pass's pulled-back peak) and back up to 20kHz.
 
-  Both share the same scheduling code (`scheduleFxSweep`/`fxExpShapedValueAt`)
-  parameterized by `fromHz`/`toHz` off the `FX_EFFECTS` entry — chained as
-  ~48 short `exponentialRampToValueAtTime` segments sampled off the
-  clip's curve, since the native API alone only produces a constant-ratio
-  (plain exponential) ramp between two points, not an arbitrary shape.
+  Both share the same scheduling code (`scheduleFxSweep`) parameterized by
+  `fromHz`/`toHz` off the `FX_EFFECTS` entry — one
+  `exponentialRampToValueAtTime` call per *straight* curve segment (see
+  "Custom curves" for why that's exact, not an approximation) plus a
+  handful more for any segment the user's actually bowed, via
+  `fxCurveScheduleBreakpoints`.
 - **Phaser** (2/4/8/16-bar variants): Web Audio has no native phaser
   node, so it's built from primitives — 6 series `allpass` `BiquadFilterNode`s
   (`stages`), all modulated in phase by one shared LFO (a 0.3Hz sine
@@ -84,8 +85,8 @@ Three effect types exist so far:
   notches), then crossfaded against the dry signal via two gain nodes. The
   "curve" here is that dry/wet crossfade, 0 (fully dry) to 1 (fully wet)
   and back to 0 at the end, same shaped rise-then-reset envelope as the
-  filter sweeps but via **linear** interpolation (`fxLinearShapedValueAt`,
-  `schedulePhaserSweep`) rather than exponential — a proportion like
+  filter sweeps but via **linear** interpolation (`schedulePhaserSweep`)
+  rather than exponential — a proportion like
   dry/wet has no meaningful "ratio," and 0 is a needed endpoint that
   `exponentialRampToValueAtTime` can't reach at all. Deliberately simple
   for this first pass, per an explicit "start simple, iterate later": fixed
@@ -135,25 +136,29 @@ gets there for everything in between.
 The data model stays thin: `clip.curve`, when present, is
 `{nodes: [{t,v}, ...], curves: [n|null, ...]}` (one `curves` entry per
 segment, `curves.length === nodes.length - 1`), sorted by time. The
-default is three nodes — `{t:0,v:0}`, `{t:1-FX_CURVE_MIN_NODE_GAP,v:1}`,
-`{t:1,v:0}` — rising across essentially the whole clip to a peak node
-pressed as close to the end node as the editor ever allows a node to get,
-so the two connect with the shortest, steepest drop the curve model can
-represent (a sudden kick-and-release right at the very end, rather than
-a gradual climb-and-fall) — carrying over the spirit of the fixed ~15ms
-reset ramp this curve model replaced ("as close to instant as a still-
-visible, still-draggable node can get," since the node's position is a
-fraction of the clip and clips range from 2 to 16 bars, not a fixed
-duration a fraction could exactly reproduce). The middle node is a
-completely ordinary, fully-draggable node like any other, repositionable
-in both time and value from the moment the inspector opens — even before
-any custom curve has actually been committed — and dragging it left, say,
-turns the shape into a triangle. `fxCurveFracAt`
-is the single point where the FX engine decides between a clip's custom
-nodes and the default, evaluated via `fxCurveValueAtT`. Both
-`fxExpShapedValueAt` and `fxLinearShapedValueAt` call through it, so a
-custom curve applies wherever the default did, including a washout's two
-simultaneously-curved parameters.
+default is three nodes — `{t:0,v:0}`, a peak node, `{t:1,v:0}` — rising
+across essentially the whole clip to a peak that sits `FX_DEFAULT_DROP_SEC`
+(100ms) before the end node, so the two connect with a short, sharp drop
+read as a sudden kick-and-release rather than a gradual climb-and-fall.
+That's a fixed *absolute* duration, deliberately — an earlier version
+placed the peak at the closest position the drag clamp allowed
+(`1 - FX_CURVE_MIN_NODE_GAP`, a fixed *fraction*), which put it exactly
+2 SVG-pixels from the edge and looked right, but a fixed fraction's
+absolute duration scales with the clip: fine (~40ms) at 4s, a
+noticeably slow ~320ms at 32s. Carrying over the spirit of the fixed
+~15ms reset ramp this curve model replaced needed an actual fixed
+duration, converted to whatever fraction that is for *this* clip's
+length — 100ms reads the same regardless of whether the clip is 2 bars
+or 16. The middle node is a completely ordinary, fully-draggable node
+like any other, repositionable in both time and value from the moment
+the inspector opens — even before any custom curve has actually been
+committed — and dragging it left, say, turns the shape into a triangle.
+`fxCurveFracAt` is the single point where the FX engine decides between
+a clip's custom nodes and the default, evaluated via `fxCurveValueAtT`.
+`scheduleFxSweep` and `schedulePhaserSweep` both call through it (via
+`fxCurveScheduleBreakpoints`, see below), so a custom curve applies
+wherever the default did, including a washout's two simultaneously-curved
+parameters.
 
 Each segment is internally a quadratic Bezier whose control point's time
 is pinned to the segment's own midpoint. That's a deliberate constraint,
@@ -168,6 +173,25 @@ value involved is clamped to 0..1, the convex-hull property of a Bezier
 curve guarantees the curve fraction itself never leaves `[0,1]` either;
 `fxCurveFracAt` still clamps defensively since the downstream Hz/wet math
 assumes that range.
+
+Scheduling reproduces the curve via `fxCurveScheduleBreakpoints`, which
+walks the node list directly rather than sampling at a fixed count across
+the whole clip (an earlier version did exactly that, at 48 samples — the
+default curve's peak-pressed-near-the-end shape is what exposed it as
+wrong: on a 32s clip, 48 even samples land ~0.7s apart, coarser than the
+curve's own ~100ms final segment, so the schedule never actually reached
+the peak or reproduced the real drop duration). A straight segment gets
+exactly one checkpoint, at its own end node, and that's not an
+approximation to trim down — it's exact: within a straight segment the
+curve fraction is affine in time, so Hz (`fromHz*(toHz/fromHz)^frac`,
+exponential-of-affine) is a pure exponential function of time and wet
+(`fromWet+(toWet-fromWet)*frac`) a pure linear one, which is exactly what
+`exponentialRampToValueAtTime`/`linearRampToValueAtTime` already produce
+between two points on their own. Only a *bowed* segment (a quadratic
+Bezier in fraction-space, not affine) actually benefits from intermediate
+samples, so only those get `FX_BOW_SUBSAMPLES` (12) of them — scaled to
+that one segment's own span, however short or long it is, rather than
+diluted across the whole clip.
 
 Add (+) inserts a new node into the current largest gap, sitting right on
 the curve's existing value there so adding one never itself changes the
@@ -213,6 +237,22 @@ on every side for the same reason: a hit-circle centered right at the
 plot's edge (e.g. the default curve's locked `v=0` endpoints) would
 otherwise get silently clipped by the SVG's own overflow, shrinking
 exactly the touch target this exists to enlarge.
+
+The `<svg>` uses `preserveAspectRatio="none"` so the curve/grid can
+stretch to fill the box at a fixed height regardless of viewport width —
+exactly what also stretches every circular marker into an ellipse, more
+so the wider the box gets (the height is fixed, so only the x-scale
+grows; dramatic on a wide desktop window, subtler on a narrow phone).
+Rather than give up the non-uniform stretch everywhere, only the four
+circle classes (`.fx-curve-node`, `.fx-curve-node-hit`,
+`.fx-curve-seg-handle`, `.fx-curve-seg-hit`) get a corrective
+`transform: scaleX(var(--fx-curve-unsquish))`, computed in
+`updateFxCurveUnsquish` from the box's actual rendered aspect ratio and
+applied via `transform-box: fill-box` so each circle scales around its
+own center rather than the group's. It's recomputed whenever the
+inspector opens on an FX clip and on window resize, so a dot reads as a
+true circle at any viewport width and stays a constant pixel size rather
+than growing with the box.
 
 Quarter grid lines (25/50/75%, faint) and matching tick marks (same
 positions, solid, just outside the plot in the padding margin) sit on

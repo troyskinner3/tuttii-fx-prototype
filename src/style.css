@@ -626,6 +626,19 @@
   .fx-curve-grid-line { stroke: var(--text-dim); stroke-width: 1; opacity: 0.25; }
   .fx-curve-tick { stroke: var(--text-dim); stroke-width: 1.5; opacity: 1; }
   .fx-curve-path { fill: none; stroke: var(--amber); stroke-width: 2.5; }
+  /* preserveAspectRatio="none" stretches x/y independently to fill the box
+     (the curve/grid are fine with that), which would otherwise squash
+     every circular marker into an ellipse -- more so the wider the box
+     gets, since the height is fixed. --fx-curve-unsquish (computed in JS
+     from the box's actual rendered aspect ratio, see updateFxCurveUnsquish)
+     cancels just that distortion back out for the four circle classes,
+     each scaled around its own center via transform-box: fill-box so its
+     plotted position is untouched. */
+  .fx-curve-node, .fx-curve-node-hit, .fx-curve-seg-handle, .fx-curve-seg-hit {
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scaleX(var(--fx-curve-unsquish, 1));
+  }
   .fx-curve-node {
     fill: var(--amber);
     stroke: var(--ink-2);

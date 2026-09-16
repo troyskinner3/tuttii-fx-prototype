@@ -1301,6 +1301,10 @@
     inspector.classList.toggle("fx-clip", clip.track === "fx");
     if (clip.track === "fx") renderFxCurveEditor(clip);
     inspector.classList.add("show");
+    // Only meaningful once the inspector (display:none until .show) is
+    // actually laid out -- computing it any earlier, inside
+    // renderFxCurveEditor above, would read a zero-size box.
+    if (clip.track === "fx") updateFxCurveUnsquish();
   }
 
   // Paints the filled (played) portion of the volume track up to the thumb,
@@ -1333,16 +1337,24 @@
   const FX_CURVE_PAD = 18;
   const FX_VIEWBOX_MINX = -FX_CURVE_PAD, FX_VIEWBOX_MINY = -FX_CURVE_PAD;
   const FX_VIEWBOX_W = FX_CURVE_W + FX_CURVE_PAD * 2, FX_VIEWBOX_H = FX_CURVE_H + FX_CURVE_PAD * 2;
-  // The minimum time-gap a node is ever allowed from its neighbors --
-  // used both as the drag clamp and, for the default curve's peak node,
-  // to place it at literally the closest-to-the-end-node position the
-  // editor allows (see fxDefaultCurveNodes): the old fixed-duration reset
-  // ramp this curve model replaced was ~15ms, "almost imperceptible" --
-  // the intent carries over as "as close to instant as a still-visible,
-  // still-draggable node can get," not a specific duration, since the
-  // node's time position is a fraction of the clip and clips vary from
-  // 2 to 16 bars.
-  const FX_CURVE_MIN_NODE_GAP = 0.01;
+  // The minimum time-gap a node is ever allowed from its neighbors, as a
+  // fraction of the clip -- purely a numerical safety floor (no zero- or
+  // negative-width segment) during a drag, not a UX distance in itself,
+  // so it stays tiny: a fraction-space floor this small is already an
+  // absolute time far below anything perceptible, at any clip length.
+  const FX_CURVE_MIN_NODE_GAP = 0.002;
+  // The default curve's peak node sits this many seconds before the end
+  // node, converted to a fraction of *this* clip's duration -- not a
+  // fixed fraction like FX_CURVE_MIN_NODE_GAP above, because a fixed
+  // fraction's absolute duration scales with the clip (a first attempt at
+  // this used exactly that, pinning the node to the closest position the
+  // drag clamp allowed -- fine at 4s but a noticeably slow ~320ms drop at
+  // 32s). A fixed absolute duration is what the old hardcoded reset ramp
+  // this curve model replaced actually had (~15ms); 100ms carries over
+  // that "reads as a snap, not a ramp" intent with a little more headroom,
+  // since this one has to stay visible and draggable rather than being
+  // purely internal.
+  const FX_DEFAULT_DROP_SEC = 0.1;
   const SVG_NS = "http://www.w3.org/2000/svg";
   let curveEditorClip = null;
   let curveEditorNodes = null;
@@ -1363,6 +1375,27 @@
       y: FX_VIEWBOX_MINY + (ev.clientY - rect.top) / rect.height * FX_VIEWBOX_H,
     };
   }
+
+  // preserveAspectRatio="none" stretches x and y independently to fill the
+  // box, which is exactly what lets the curve/grid span the full width at
+  // a fixed height -- but it also stretches every circular node/handle
+  // into an ellipse, more so the wider the box gets (height is fixed, so
+  // only the x-scale grows). Rather than give up the non-uniform stretch
+  // for the whole plot, only the circular markers get a corrective
+  // horizontal scale (`--fx-curve-unsquish` in the stylesheet, via
+  // `transform-box: fill-box` so it scales each one around its own
+  // center) that cancels the box's own aspect distortion back out, sized
+  // to whichever axis is more constrained (in practice always the fixed
+  // height) -- so a dot reads as a true circle at any viewport width, and
+  // stays the same pixel size rather than growing with the box.
+  function updateFxCurveUnsquish() {
+    const rect = fxCurveSvg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const scaleX = rect.width / FX_VIEWBOX_W;
+    const scaleY = rect.height / FX_VIEWBOX_H;
+    fxCurveSvg.style.setProperty("--fx-curve-unsquish", scaleY / scaleX);
+  }
+  window.addEventListener("resize", updateFxCurveUnsquish);
 
   function fxDefaultSegCurves(nodeCount) {
     return new Array(Math.max(0, nodeCount - 1)).fill(null);
@@ -1511,7 +1544,7 @@
   // edit happens, so merely looking at a clip never silently converts it.
   function renderFxCurveEditor(clip) {
     curveEditorClip = clip;
-    curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
+    curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes(barsToSeconds(clip.duration));
     curveEditorSegCurves = (clip.curve && clip.curve.curves) || fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurveGrid();
@@ -1640,7 +1673,7 @@
   fxCurveReset.addEventListener("click", () => {
     if (!curveEditorClip) return;
     delete curveEditorClip.curve;
-    curveEditorNodes = fxDefaultCurveNodes();
+    curveEditorNodes = fxDefaultCurveNodes(barsToSeconds(curveEditorClip.duration));
     curveEditorSegCurves = fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
@@ -1919,7 +1952,11 @@
   // BiquadFilterNode doubles as both). A phaser needs several internal
   // nodes (an allpass chain, a shared LFO, a dry/wet crossfade), so it
   // exposes its own external input/output gain nodes instead.
-  const FX_CURVE_SEGMENTS = 48; // exponentialRampToValueAtTime is only a constant-ratio curve even though the node curve's segments are straight lines in fraction-space (e.g. Hz still moves exponentially within a segment); chaining this many short ramps through sampled checkpoints approximates it (now spanning the whole clip, not just a rise phase, so more segments than before)
+  // How many extra ramp checkpoints a *bowed* segment gets beyond its own
+  // two endpoints (see fxCurveScheduleBreakpoints below) -- a straight
+  // segment needs none, since a single Web Audio ramp between its two
+  // endpoint values is already mathematically exact for it.
+  const FX_BOW_SUBSAMPLES = 12;
 
   // ---------- FX custom curves ----------
   // A clip's whole-duration shape (0..1 time in, 0..1 value out) is either
@@ -1935,14 +1972,15 @@
   // into the curve itself let it be removed) -- the user fully controls
   // how gradually or sharply the effect gets back to neutral, just not
   // whether it does.
-  function fxDefaultCurveNodes() {
-    // Rises across essentially the entire clip to a peak node pressed as
-    // close to the end node as the editor ever allows a node to get
-    // (FX_CURVE_MIN_NODE_GAP), so the two connect with the shortest,
-    // steepest drop the curve model can represent -- reading as a sudden
-    // kick-and-release right at the very end, rather than a gradual
-    // climb-and-fall.
-    return [{ t: 0, v: 0 }, { t: 1 - FX_CURVE_MIN_NODE_GAP, v: 1 }, { t: 1, v: 0 }];
+  function fxDefaultCurveNodes(totalDurSec) {
+    // Rises across essentially the entire clip to a peak node sitting
+    // FX_DEFAULT_DROP_SEC before the end node -- a fixed absolute
+    // duration, not a fixed fraction, so the drop reads equally snappy on
+    // a 4s clip and a 32s one. Falls back to the fraction-space safety
+    // floor for a degenerate (zero/negative) duration.
+    const dropFrac = totalDurSec > 0 ? Math.min(0.5, FX_DEFAULT_DROP_SEC / totalDurSec) : FX_CURVE_MIN_NODE_GAP;
+    const peakT = 1 - Math.max(FX_CURVE_MIN_NODE_GAP, dropFrac);
+    return [{ t: 0, v: 0 }, { t: peakT, v: 1 }, { t: 1, v: 0 }];
   }
 
   // Each segment is a quadratic Bezier whose control point's time is
@@ -1972,42 +2010,53 @@
     return nodes[nodes.length - 1].v;
   }
   // The single point where a custom curve (if any) actually takes over
-  // from the default -- everywhere else in the FX engine goes through
-  // fxExpShapedValueAt/fxLinearShapedValueAt, which both call this. Clamped
-  // defensively, though a Bezier control value itself clamped to 0..1 keeps
-  // the curve within the same range by the convex-hull property.
+  // from the default -- everywhere else in the FX engine goes through this
+  // (scheduleFxSweep/schedulePhaserSweep, both via
+  // fxCurveScheduleBreakpoints, plus each one's own startFrac lookup).
+  // Clamped defensively, though a Bezier control value itself clamped to
+  // 0..1 keeps the curve within the same range by the convex-hull property.
   function fxCurveFracAt(clip, linFrac) {
-    const nodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
+    const nodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes(barsToSeconds(clip.duration));
     const segCurves = clip.curve && clip.curve.curves;
     return Math.min(1, Math.max(0, fxCurveValueAtT(nodes, linFrac, segCurves)));
   }
 
-  // Exponential interpolation of the curve's shaped fraction, matching
-  // exactly how exponentialRampToValueAtTime itself interpolates, so a
-  // value computed here for a given clip-relative time lines up with
-  // where the real ramp would actually be at that instant. That's what
-  // lets playback pick up mid-curve (e.g. after a seek lands inside an FX
-  // clip) without an audible jump. Works for either sweep direction
-  // (fromHz > toHz, as in high pass, or the reverse, as in low pass) since
-  // it's just exponential interpolation between two positive values --
-  // appropriate for frequency, a log-domain quantity (see
-  // fxLinearShapedValueAt for a proportion like dry/wet instead). The
-  // curve spans the clip's whole duration now, not a rise phase plus a
-  // separate tail -- see fxCurveFracAt's comment.
-  function fxExpShapedValueAt(clip, cfg, tSec, totalDurSec) {
-    const linFrac = totalDurSec > 0 ? tSec / totalDurSec : 1;
-    const shapedFrac = fxCurveFracAt(clip, linFrac);
-    return cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, shapedFrac);
-  }
-
-  // Same curve, but LINEAR interpolation of the shaped fraction rather
-  // than exponential -- correct for a proportion like dry/wet (0..1),
-  // which has no meaningful "ratio," and which exponentialRampToValueAtTime
-  // can't even reach (it rejects 0 as an endpoint; a phaser needs to be
-  // able to start and end fully dry).
-  function fxLinearShapedValueAt(clip, cfg, tSec, totalDurSec) {
-    const linFrac = totalDurSec > 0 ? tSec / totalDurSec : 1;
-    return cfg.fromWet + (cfg.toWet - cfg.fromWet) * fxCurveFracAt(clip, linFrac);
+  // The ramp checkpoints scheduling needs to reproduce the curve, as
+  // {tSec, frac} pairs from just after offsetIntoClipSec through the
+  // clip's end -- built from the curve's own node structure rather than
+  // sampling at a fixed count across the whole clip. That fixed-count
+  // approach (48 evenly-spaced samples, regardless of clip length) is
+  // what the default curve's node-pressed-near-the-end shape exposed as
+  // wrong: a 32s clip's samples land ~0.7s apart, coarser than the
+  // ~100ms final segment they were supposed to resolve, so the schedule
+  // never actually reached the curve's peak or its real drop duration.
+  // Sampling per node-segment instead fixes that at the source: a straight
+  // (unbowed) segment gets exactly one checkpoint, at its own end node --
+  // and that's not an approximation to trim down, it's exact. Within a
+  // straight segment, frac is affine in time, so Hz (fromHz*(toHz/fromHz)
+  // ^frac, exponential-of-affine) is a pure exponential function of time,
+  // and wet (fromWet+(toWet-fromWet)*frac) is a pure linear function of
+  // time -- exactly what exponentialRampToValueAtTime/
+  // linearRampToValueAtTime already produce between two points on their
+  // own. Only a bowed segment (a quadratic Bezier in fraction-space, not
+  // affine) actually needs intermediate samples, so only those get
+  // FX_BOW_SUBSAMPLES of them, however short or long that one segment is.
+  function fxCurveScheduleBreakpoints(clip, totalDurSec, offsetIntoClipSec) {
+    const nodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes(totalDurSec);
+    const segCurves = clip.curve && clip.curve.curves;
+    const startFrac = totalDurSec > 0 ? offsetIntoClipSec / totalDurSec : 1;
+    const points = [];
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const p0 = nodes[i], p1 = nodes[i + 1];
+      if (p1.t <= startFrac) continue; // this whole segment is already in the past
+      const steps = (segCurves && typeof segCurves[i] === "number") ? FX_BOW_SUBSAMPLES : 1;
+      for (let s = 1; s <= steps; s++) {
+        const t = p0.t + (p1.t - p0.t) * (s / steps);
+        if (t <= startFrac) continue; // partway through this segment already
+        points.push({ tSec: t * totalDurSec, frac: fxCurveValueAtT(nodes, t, segCurves) });
+      }
+    }
+    return points;
   }
 
   // fromHz -> toHz over the curve's shape across the whole clip. Locking
@@ -2018,14 +2067,14 @@
   // resume from the curve's correct value instead of restarting at fromHz.
   function scheduleFxSweep(node, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
-    const startVal = fxExpShapedValueAt(clip, cfg, offsetIntoClipSec, totalDurSec);
+    const startFrac = totalDurSec > 0 ? offsetIntoClipSec / totalDurSec : 1;
+    const hzAt = (frac) => cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, frac);
     const p = node.frequency;
 
-    p.setValueAtTime(startVal, at);
-    for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
-      const segT = offsetIntoClipSec + (totalDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
-      p.exponentialRampToValueAtTime(fxExpShapedValueAt(clip, cfg, segT, totalDurSec), at + (segT - offsetIntoClipSec));
-    }
+    p.setValueAtTime(hzAt(fxCurveFracAt(clip, startFrac)), at);
+    fxCurveScheduleBreakpoints(clip, totalDurSec, offsetIntoClipSec).forEach(({ tSec, frac }) => {
+      p.exponentialRampToValueAtTime(hzAt(frac), at + (tSec - offsetIntoClipSec));
+    });
   }
 
   // fromWet -> toWet crossfade (dryGain always kept as the complement,
@@ -2034,18 +2083,18 @@
   // above but linear, since 0 is a valid, needed endpoint here.
   function schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offsetIntoClipSec) {
     const totalDurSec = barsToSeconds(clip.duration);
-    const wetAt = (t) => fxLinearShapedValueAt(clip, cfg, t, totalDurSec);
+    const startFrac = totalDurSec > 0 ? offsetIntoClipSec / totalDurSec : 1;
+    const wetAt = (frac) => cfg.fromWet + (cfg.toWet - cfg.fromWet) * frac;
 
-    const startWet = wetAt(offsetIntoClipSec);
+    const startWet = wetAt(fxCurveFracAt(clip, startFrac));
     wetGain.gain.setValueAtTime(startWet, at);
     dryGain.gain.setValueAtTime(1 - startWet, at);
-    for (let i = 1; i <= FX_CURVE_SEGMENTS; i++) {
-      const segT = offsetIntoClipSec + (totalDurSec - offsetIntoClipSec) * (i / FX_CURVE_SEGMENTS);
-      const w = wetAt(segT);
-      const segAt = at + (segT - offsetIntoClipSec);
+    fxCurveScheduleBreakpoints(clip, totalDurSec, offsetIntoClipSec).forEach(({ tSec, frac }) => {
+      const w = wetAt(frac);
+      const segAt = at + (tSec - offsetIntoClipSec);
       wetGain.gain.linearRampToValueAtTime(w, segAt);
       dryGain.gain.linearRampToValueAtTime(1 - w, segAt);
-    }
+    });
   }
 
   // Builds one FX clip's audio unit. `track`, when provided, records every
