@@ -135,14 +135,20 @@ gets there for everything in between.
 The data model stays thin: `clip.curve`, when present, is
 `{nodes: [{t,v}, ...], curves: [n|null, ...]}` (one `curves` entry per
 segment, `curves.length === nodes.length - 1`), sorted by time. The
-default is three nodes — `{t:0,v:0}`, `{t:0.92,v:1}`, `{t:1,v:0}` —
-rising across most of the clip to a peak that sits close to the end node,
-so the two connect with a short, steep, near-vertical drop (a sudden
-kick-and-release rather than a gradual climb-and-fall). The middle node
-is a completely ordinary, fully-draggable node like any other,
-repositionable in both time and value from the moment the inspector
-opens — even before any custom curve has actually been committed — and
-dragging it left, say, turns the shape into a triangle. `fxCurveFracAt`
+default is three nodes — `{t:0,v:0}`, `{t:1-FX_CURVE_MIN_NODE_GAP,v:1}`,
+`{t:1,v:0}` — rising across essentially the whole clip to a peak node
+pressed as close to the end node as the editor ever allows a node to get,
+so the two connect with the shortest, steepest drop the curve model can
+represent (a sudden kick-and-release right at the very end, rather than
+a gradual climb-and-fall) — carrying over the spirit of the fixed ~15ms
+reset ramp this curve model replaced ("as close to instant as a still-
+visible, still-draggable node can get," since the node's position is a
+fraction of the clip and clips range from 2 to 16 bars, not a fixed
+duration a fraction could exactly reproduce). The middle node is a
+completely ordinary, fully-draggable node like any other, repositionable
+in both time and value from the moment the inspector opens — even before
+any custom curve has actually been committed — and dragging it left, say,
+turns the shape into a triangle. `fxCurveFracAt`
 is the single point where the FX engine decides between a clip's custom
 nodes and the default, evaluated via `fxCurveValueAtT`. Both
 `fxExpShapedValueAt` and `fxLinearShapedValueAt` call through it, so a

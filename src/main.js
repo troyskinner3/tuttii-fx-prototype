@@ -1336,6 +1336,16 @@
   const FX_CURVE_PAD = 18;
   const FX_VIEWBOX_MINX = -FX_CURVE_PAD, FX_VIEWBOX_MINY = -FX_CURVE_PAD;
   const FX_VIEWBOX_W = FX_CURVE_W + FX_CURVE_PAD * 2, FX_VIEWBOX_H = FX_CURVE_H + FX_CURVE_PAD * 2;
+  // The minimum time-gap a node is ever allowed from its neighbors --
+  // used both as the drag clamp and, for the default curve's peak node,
+  // to place it at literally the closest-to-the-end-node position the
+  // editor allows (see fxDefaultCurveNodes): the old fixed-duration reset
+  // ramp this curve model replaced was ~15ms, "almost imperceptible" --
+  // the intent carries over as "as close to instant as a still-visible,
+  // still-draggable node can get," not a specific duration, since the
+  // node's time position is a fraction of the clip and clips vary from
+  // 2 to 16 bars.
+  const FX_CURVE_MIN_NODE_GAP = 0.01;
   const SVG_NS = "http://www.w3.org/2000/svg";
   let curveEditorClip = null;
   let curveEditorNodes = null;
@@ -1467,7 +1477,7 @@
       // make "the curve" ambiguous at that time.
       const prevT = curveEditorNodes[index - 1].t;
       const nextT = curveEditorNodes[index + 1].t;
-      curveEditorNodes[index].t = Math.min(nextT - 0.01, Math.max(prevT + 0.01, curvePt.t));
+      curveEditorNodes[index].t = Math.min(nextT - FX_CURVE_MIN_NODE_GAP, Math.max(prevT + FX_CURVE_MIN_NODE_GAP, curvePt.t));
       curveEditorNodes[index].v = curvePt.v;
       drawFxCurve();
     }
@@ -1861,13 +1871,13 @@
   // how gradually or sharply the effect gets back to neutral, just not
   // whether it does.
   function fxDefaultCurveNodes() {
-    // Rises across most of the clip to a peak sitting close to the end
-    // node, so the two connect with a short, steep, near-vertical drop --
-    // matching Xfer LFO Tool's default straight-line segments (a node's
-    // segment is only curved once you give it tension, which is a v2
-    // feature here) and reading as a sudden kick-and-release rather than a
-    // gradual climb-and-fall.
-    return [{ t: 0, v: 0 }, { t: 0.92, v: 1 }, { t: 1, v: 0 }];
+    // Rises across essentially the entire clip to a peak node pressed as
+    // close to the end node as the editor ever allows a node to get
+    // (FX_CURVE_MIN_NODE_GAP), so the two connect with the shortest,
+    // steepest drop the curve model can represent -- reading as a sudden
+    // kick-and-release right at the very end, rather than a gradual
+    // climb-and-fall.
+    return [{ t: 0, v: 0 }, { t: 1 - FX_CURVE_MIN_NODE_GAP, v: 1 }, { t: 1, v: 0 }];
   }
 
   // Each segment is a quadratic Bezier whose control point's time is
