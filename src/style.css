@@ -625,11 +625,27 @@
     fill: var(--amber);
     stroke: var(--ink-2);
     stroke-width: 2;
+    pointer-events: none; /* the larger invisible .fx-curve-node-hit circle underneath carries the pointer handler */
+  }
+  .fx-curve-node.anchor { fill: var(--text-dim); }
+  .fx-curve-node.selected { stroke: var(--text); }
+  .fx-curve-node-hit {
+    fill: transparent;
+    pointer-events: all;
     cursor: grab;
   }
-  .fx-curve-node:active { cursor: grabbing; }
-  .fx-curve-node.anchor { fill: var(--text-dim); cursor: default; }
-  .fx-curve-node.selected { stroke: var(--text); }
+  .fx-curve-node-hit:active { cursor: grabbing; }
+  .fx-curve-seg-handle {
+    fill: var(--text-dim);
+    opacity: 0.55;
+    pointer-events: none; /* the larger invisible .fx-curve-seg-hit circle underneath carries the pointer handler */
+  }
+  .fx-curve-seg-handle.active { fill: var(--amber); opacity: 0.9; }
+  .fx-curve-seg-hit {
+    fill: transparent;
+    pointer-events: all;
+    cursor: ns-resize;
+  }
   .fx-curve-hint { font-size: 10.5px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.5; }
 
   /* Library */

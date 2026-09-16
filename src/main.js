@@ -325,6 +325,7 @@
   const volVal = document.getElementById("volVal");
   const fxCurveSvg = document.getElementById("fxCurveSvg");
   const fxCurvePath = document.getElementById("fxCurvePath");
+  const fxCurveSegHandlesGroup = document.getElementById("fxCurveSegHandlesGroup");
   const fxCurveNodesGroup = document.getElementById("fxCurveNodesGroup");
   const fxCurveAddNode = document.getElementById("fxCurveAddNode");
   const fxCurveDeleteNode = document.getElementById("fxCurveDeleteNode");
@@ -1315,18 +1316,30 @@
 
   // ---------- FX curve editor ----------
   // LFO-drawing-tool style: any number of draggable nodes (Xfer LFO Tool
-  // was the explicit reference), connected by straight lines
-  // (fxCurveValueAtT) -- LFO Tool's own default for an un-tensioned
-  // segment. The two end nodes are fixed at t=0/t=1, v=0 -- not draggable,
-  // not deletable, no pointer handler at all -- everything else is freely
-  // addable, draggable, and deletable. curveEditorNodes/curveEditorClip/
+  // was the explicit reference), connected by straight lines by default
+  // (fxCurveValueAtT), each independently bowable by dragging its segment
+  // handle -- a small marker sitting on the curve at that segment's
+  // midpoint -- up or down. The two end nodes are fixed at t=0/t=1, v=0 --
+  // not draggable, not deletable, no pointer handler at all -- everything
+  // else is freely addable, draggable, and deletable.
+  // curveEditorNodes/curveEditorSegCurves/curveEditorClip/
   // selectedCurveNodeIndex track the editor's live, uncommitted state;
   // nothing writes to clip.curve until an actual edit happens (see
   // commitCurveEdit).
-  const FX_CURVE_W = 200, FX_CURVE_H = 120; // matches fxCurveSvg's viewBox
+  const FX_CURVE_W = 200, FX_CURVE_H = 120; // the plotted curve area, in SVG user units
+  // fxCurveSvg's actual viewBox is padded out by this much on every side
+  // (see index.html) so that a node/segment hit-circle centered right at
+  // the plot's own edge -- e.g. the default curve's locked v=0 endpoints,
+  // or a dragged node pinned to v=1 -- doesn't get silently clipped by the
+  // SVG's own overflow, which would shrink exactly the touch target this
+  // padding exists to keep full-size.
+  const FX_CURVE_PAD = 18;
+  const FX_VIEWBOX_MINX = -FX_CURVE_PAD, FX_VIEWBOX_MINY = -FX_CURVE_PAD;
+  const FX_VIEWBOX_W = FX_CURVE_W + FX_CURVE_PAD * 2, FX_VIEWBOX_H = FX_CURVE_H + FX_CURVE_PAD * 2;
   const SVG_NS = "http://www.w3.org/2000/svg";
   let curveEditorClip = null;
   let curveEditorNodes = null;
+  let curveEditorSegCurves = null;
   let selectedCurveNodeIndex = null;
 
   function curveToSvg(t, v) { return { x: t * FX_CURVE_W, y: FX_CURVE_H - v * FX_CURVE_H }; } // y flips: curve-space grows up, SVG grows down
@@ -1339,17 +1352,21 @@
   function svgPointFromEvent(ev) {
     const rect = fxCurveSvg.getBoundingClientRect();
     return {
-      x: (ev.clientX - rect.left) / rect.width * FX_CURVE_W,
-      y: (ev.clientY - rect.top) / rect.height * FX_CURVE_H,
+      x: FX_VIEWBOX_MINX + (ev.clientX - rect.left) / rect.width * FX_VIEWBOX_W,
+      y: FX_VIEWBOX_MINY + (ev.clientY - rect.top) / rect.height * FX_VIEWBOX_H,
     };
   }
 
-  function fxCurvePathD(nodes) {
+  function fxDefaultSegCurves(nodeCount) {
+    return new Array(Math.max(0, nodeCount - 1)).fill(null);
+  }
+
+  function fxCurvePathD(nodes, segCurves) {
     const steps = 60;
     let d = "";
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
-      const v = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, t)));
+      const v = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, t, segCurves)));
       const pt = curveToSvg(t, v);
       d += (i === 0 ? "M " : "L ") + pt.x + " " + pt.y + " ";
     }
@@ -1358,19 +1375,58 @@
 
   function drawFxCurve() {
     const nodes = curveEditorNodes;
-    fxCurvePath.setAttribute("d", fxCurvePathD(nodes));
+    const segCurves = curveEditorSegCurves;
+    fxCurvePath.setAttribute("d", fxCurvePathD(nodes, segCurves));
+
+    // Segment bow handles first, so the point-nodes drawn after them sit on
+    // top and always win the hit-test where the two might overlap.
+    fxCurveSegHandlesGroup.innerHTML = "";
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const midT = (nodes[i].t + nodes[i + 1].t) / 2;
+      const midV = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, midT, segCurves)));
+      const pt = curveToSvg(midT, midV);
+      const isBowed = typeof segCurves[i] === "number";
+      // A larger invisible circle carries the pointer handler so the
+      // segment is easy to grab on a touch screen; the small visible dot
+      // underneath it is just a marker and never itself receives events.
+      const hit = document.createElementNS(SVG_NS, "circle");
+      hit.setAttribute("cx", pt.x);
+      hit.setAttribute("cy", pt.y);
+      hit.setAttribute("r", 14);
+      hit.setAttribute("class", "fx-curve-seg-hit");
+      hit.addEventListener("pointerdown", (e) => startCurveSegDrag(e, i));
+      fxCurveSegHandlesGroup.appendChild(hit);
+      const dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("cx", pt.x);
+      dot.setAttribute("cy", pt.y);
+      dot.setAttribute("r", 3);
+      dot.setAttribute("class", "fx-curve-seg-handle" + (isBowed ? " active" : ""));
+      fxCurveSegHandlesGroup.appendChild(dot);
+    }
 
     fxCurveNodesGroup.innerHTML = "";
     nodes.forEach((node, i) => {
       const isEndpoint = i === 0 || i === nodes.length - 1;
       const isSelected = i === selectedCurveNodeIndex;
       const pt = curveToSvg(node.t, node.v);
+      if (!isEndpoint) {
+        // Same larger-invisible-hit-target pattern as the segment handles
+        // above -- the visible dot is only 6-8 viewBox units (~10-15
+        // screen px after the SVG's non-uniform stretch), too small to
+        // reliably hit on a touch screen.
+        const hit = document.createElementNS(SVG_NS, "circle");
+        hit.setAttribute("cx", pt.x);
+        hit.setAttribute("cy", pt.y);
+        hit.setAttribute("r", 16);
+        hit.setAttribute("class", "fx-curve-node-hit");
+        hit.addEventListener("pointerdown", (e) => startCurveNodeDrag(e, i));
+        fxCurveNodesGroup.appendChild(hit);
+      }
       const circle = document.createElementNS(SVG_NS, "circle");
       circle.setAttribute("cx", pt.x);
       circle.setAttribute("cy", pt.y);
       circle.setAttribute("r", isEndpoint ? 4 : (isSelected ? 8 : 6));
       circle.setAttribute("class", "fx-curve-node" + (isEndpoint ? " anchor" : "") + (isSelected ? " selected" : ""));
-      if (!isEndpoint) circle.addEventListener("pointerdown", (e) => startCurveNodeDrag(e, i));
       fxCurveNodesGroup.appendChild(circle);
     });
     fxCurveDeleteNode.disabled = selectedCurveNodeIndex === null;
@@ -1382,13 +1438,14 @@
   function renderFxCurveEditor(clip) {
     curveEditorClip = clip;
     curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
+    curveEditorSegCurves = (clip.curve && clip.curve.curves) || fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
   }
 
   function commitCurveEdit() {
     if (!curveEditorClip) return;
-    curveEditorClip.curve = { nodes: curveEditorNodes };
+    curveEditorClip.curve = { nodes: curveEditorNodes, curves: curveEditorSegCurves };
     commitHistory();
   }
 
@@ -1432,6 +1489,44 @@
     document.addEventListener("pointercancel", onUp);
   }
 
+  // Bowing a segment: the handle sits on the curve at the segment's own
+  // midpoint (t fixed there), and dragging it vertically moves that exact
+  // point to follow the pointer -- horizontal movement is ignored, since
+  // this is "grab the line and pull up/down," not a freely-placed handle.
+  // Internally this is one quadratic-Bezier control value per segment
+  // (fxCurveValueAtT); solving for the control value that puts the curve's
+  // own rendered midpoint (V(0.5) = 0.5*controlV + 0.25*(p0.v+p1.v)) under
+  // the pointer keeps what the user sees matching what they're dragging.
+  function startCurveSegDrag(e, index) {
+    e.preventDefault();
+    e.stopPropagation();
+    const pointerId = e.pointerId;
+    const startX = e.clientX, startY = e.clientY;
+    let moved = false;
+    const p0 = curveEditorNodes[index], p1 = curveEditorNodes[index + 1];
+
+    function onMove(ev) {
+      if (ev.pointerId !== pointerId) return;
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 3) moved = true;
+      if (!moved) return;
+      const svgPt = svgPointFromEvent(ev);
+      const dragV = svgToCurve(svgPt.x, svgPt.y).v;
+      const controlV = 2 * dragV - 0.5 * (p0.v + p1.v);
+      curveEditorSegCurves[index] = Math.min(1, Math.max(0, controlV));
+      drawFxCurve();
+    }
+    function onUp(ev) {
+      if (ev.pointerId !== pointerId) return;
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      if (moved) commitCurveEdit();
+    }
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  }
+
   fxCurveAddNode.addEventListener("click", () => {
     if (!curveEditorClip) return;
     const nodes = curveEditorNodes;
@@ -1445,8 +1540,14 @@
       if (gap > bestGap) { bestGap = gap; bestIdx = i; }
     }
     const midT = (nodes[bestIdx].t + nodes[bestIdx + 1].t) / 2;
-    const midV = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, midT)));
+    const midV = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, midT, curveEditorSegCurves)));
     nodes.splice(bestIdx + 1, 0, { t: midT, v: midV });
+    // Splitting a segment resets any bow it had -- preserving it exactly
+    // would need re-deriving two new control values via Bezier
+    // subdivision, which only works cleanly if a control point can sit off
+    // its segment's midpoint (it can't, here); not worth the complexity
+    // for what should be a rare add-a-node-after-bowing edge case.
+    curveEditorSegCurves = fxDefaultSegCurves(nodes.length);
     selectedCurveNodeIndex = bestIdx + 1;
     drawFxCurve();
     commitCurveEdit();
@@ -1455,6 +1556,7 @@
   fxCurveDeleteNode.addEventListener("click", () => {
     if (!curveEditorClip || selectedCurveNodeIndex === null) return;
     curveEditorNodes.splice(selectedCurveNodeIndex, 1);
+    curveEditorSegCurves = fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
     commitCurveEdit();
@@ -1464,6 +1566,7 @@
     if (!curveEditorClip) return;
     delete curveEditorClip.curve;
     curveEditorNodes = fxDefaultCurveNodes();
+    curveEditorSegCurves = fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
     commitHistory();
@@ -1747,14 +1850,16 @@
   // A clip's whole-duration shape (0..1 time in, 0..1 value out) is either
   // the default 3-node curve below, or -- once a user drags/adds/deletes a
   // node in the curve editor -- whatever nodes they've shaped it into.
-  // clip.curve, when present, is {nodes: [{t,v}, ...]}, sorted by t. nodes[0]
-  // is always {t:0, v:0} and the last is always {t:1, v:0} -- LOCKED, not
-  // draggable or deletable in the editor. That's the whole "always resets
-  // cleanly" guardrail: with both ends pinned to neutral, there's no longer
-  // a separate hardcoded reset-ramp mechanism bolted on afterward (the
-  // curve model used to have one; folding the guarantee into the curve
-  // itself let it be removed) -- the user fully controls how gradually or
-  // sharply the effect gets back to neutral, just not whether it does.
+  // clip.curve, when present, is {nodes: [{t,v}, ...], curves: [n|null, ...]}
+  // (curves.length === nodes.length - 1, one entry per segment), sorted by
+  // t. nodes[0] is always {t:0, v:0} and the last is always {t:1, v:0} --
+  // LOCKED, not draggable or deletable in the editor. That's the whole
+  // "always resets cleanly" guardrail: with both ends pinned to neutral,
+  // there's no longer a separate hardcoded reset-ramp mechanism bolted on
+  // afterward (the curve model used to have one; folding the guarantee
+  // into the curve itself let it be removed) -- the user fully controls
+  // how gradually or sharply the effect gets back to neutral, just not
+  // whether it does.
   function fxDefaultCurveNodes() {
     // Rises across most of the clip to a peak sitting close to the end
     // node, so the two connect with a short, steep, near-vertical drop --
@@ -1765,13 +1870,18 @@
     return [{ t: 0, v: 0 }, { t: 0.92, v: 1 }, { t: 1, v: 0 }];
   }
 
-  // Straight-line (linear) interpolation between consecutive nodes -- the
-  // LFO Tool default of an un-tensioned segment. Per-segment curve/tension
-  // handles (bowing a segment instead of it being a straight line) are a
-  // planned v2 addition; for now every segment is a plain line, so moving a
-  // node only ever reshapes the two segments touching it, never its
-  // neighbors further out.
-  function fxCurveValueAtT(nodes, t) {
+  // Each segment is a quadratic Bezier whose control point's time is
+  // pinned to the segment's own midpoint -- which has a nice property:
+  // it makes the curve's time axis exactly linear in u (the standard
+  // Bezier parameter), so t can be used directly as u with no root-solving
+  // needed to invert it. With no explicit segCurves entry, the control
+  // value defaults to the straight-line midpoint ((p0.v+p1.v)/2), which
+  // makes the Bezier degenerate to a plain straight line -- LFO Tool's own
+  // default for a segment with no tension applied. A stored segCurves[i]
+  // bows it: the value is solved (in startCurveSegDrag) so that what the
+  // user actually sees and drags -- the curve's own rendered midpoint --
+  // tracks the pointer, not the abstract Bezier control point itself.
+  function fxCurveValueAtT(nodes, t, segCurves) {
     if (t <= nodes[0].t) return nodes[0].v;
     if (t >= nodes[nodes.length - 1].t) return nodes[nodes.length - 1].v;
     for (let i = 0; i < nodes.length - 1; i++) {
@@ -1779,7 +1889,9 @@
       if (t <= p1.t) {
         const dt = p1.t - p0.t;
         const u = dt > 0 ? (t - p0.t) / dt : 0;
-        return p0.v + (p1.v - p0.v) * u;
+        const c = (segCurves && typeof segCurves[i] === "number") ? segCurves[i] : (p0.v + p1.v) / 2;
+        const inv = 1 - u;
+        return inv * inv * p0.v + 2 * inv * u * c + u * u * p1.v;
       }
     }
     return nodes[nodes.length - 1].v;
@@ -1787,11 +1899,12 @@
   // The single point where a custom curve (if any) actually takes over
   // from the default -- everywhere else in the FX engine goes through
   // fxExpShapedValueAt/fxLinearShapedValueAt, which both call this. Clamped
-  // defensively even though straight-line segments between 0..1 nodes never
-  // overshoot on their own.
+  // defensively, though a Bezier control value itself clamped to 0..1 keeps
+  // the curve within the same range by the convex-hull property.
   function fxCurveFracAt(clip, linFrac) {
     const nodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes();
-    return Math.min(1, Math.max(0, fxCurveValueAtT(nodes, linFrac)));
+    const segCurves = clip.curve && clip.curve.curves;
+    return Math.min(1, Math.max(0, fxCurveValueAtT(nodes, linFrac, segCurves)));
   }
 
   // Exponential interpolation of the curve's shaped fraction, matching

@@ -133,24 +133,35 @@ that guarantee, and the user fully controls how gradually or sharply it
 gets there for everything in between.
 
 The data model stays thin: `clip.curve`, when present, is
-`{nodes: [{t,v}, ...]}`, sorted by time. The default is three nodes —
-`{t:0,v:0}`, `{t:0.92,v:1}`, `{t:1,v:0}` — rising across most of the clip
-to a peak that sits close to the end node, so the two connect with a
-short, steep, near-vertical drop (a sudden kick-and-release rather than a
-gradual climb-and-fall). The middle node is a completely ordinary,
-fully-draggable node like any other, repositionable in both time and
-value from the moment the inspector opens — even before any custom curve
-has actually been committed — and dragging it left, say, turns the shape
-into a triangle. `fxCurveFracAt` is the single point where the FX engine
-decides between a clip's custom nodes and the default, evaluated via
-plain linear interpolation between consecutive nodes (`fxCurveValueAtT`)
-— LFO Tool's own default for a segment with no tension applied. Both
+`{nodes: [{t,v}, ...], curves: [n|null, ...]}` (one `curves` entry per
+segment, `curves.length === nodes.length - 1`), sorted by time. The
+default is three nodes — `{t:0,v:0}`, `{t:0.92,v:1}`, `{t:1,v:0}` —
+rising across most of the clip to a peak that sits close to the end node,
+so the two connect with a short, steep, near-vertical drop (a sudden
+kick-and-release rather than a gradual climb-and-fall). The middle node
+is a completely ordinary, fully-draggable node like any other,
+repositionable in both time and value from the moment the inspector
+opens — even before any custom curve has actually been committed — and
+dragging it left, say, turns the shape into a triangle. `fxCurveFracAt`
+is the single point where the FX engine decides between a clip's custom
+nodes and the default, evaluated via `fxCurveValueAtT`. Both
 `fxExpShapedValueAt` and `fxLinearShapedValueAt` call through it, so a
 custom curve applies wherever the default did, including a washout's two
-simultaneously-curved parameters. Because segments are straight lines
-between 0..1 nodes, the curve fraction itself never overshoots outside
-`[0,1]` — `fxCurveFracAt` still clamps defensively, since the downstream
-Hz/wet math assumes that range.
+simultaneously-curved parameters.
+
+Each segment is internally a quadratic Bezier whose control point's time
+is pinned to the segment's own midpoint. That's a deliberate constraint,
+not an implementation detail to hide: fixing the control point's time
+coordinate makes the curve's time axis exactly linear (no root-solving
+needed to invert time → parameter, the way a from-off-the-path
+tangent-handle Bezier would need). With no stored `curves[i]`, the
+control value defaults to the segment's straight-line midpoint value,
+which makes the Bezier degenerate to an actual straight line — LFO
+Tool's own default for a segment with no tension applied. Because every
+value involved is clamped to 0..1, the convex-hull property of a Bezier
+curve guarantees the curve fraction itself never leaves `[0,1]` either;
+`fxCurveFracAt` still clamps defensively since the downstream Hz/wet math
+assumes that range.
 
 Add (+) inserts a new node into the current largest gap, sitting right on
 the curve's existing value there so adding one never itself changes the
@@ -158,22 +169,35 @@ shape until it's dragged. Tapping a node selects it (a second tap
 deselects); the delete button is enabled only while a deletable
 (non-endpoint) node is selected. Dragging a node keeps its time coordinate
 clamped between its immediate neighbors, so nodes can't cross over each
-other and leave "the curve" ambiguous at some instant. Opening the
+other and leave "the curve" ambiguous at some instant. A small handle
+also sits on the curve at each segment's own midpoint — grab it and drag
+vertically (horizontal movement is ignored) to bow that one segment into
+a curve, LFO Tool-style, without needing separate off-curve tangent
+handles; `startCurveSegDrag` solves for the Bezier control value that
+puts the curve's own rendered midpoint (the point actually being dragged,
+not the abstract control point) under the pointer. Adding or deleting a
+node resets every segment's bow back to straight — preserving a bow
+through a resulting node-count change would need re-deriving control
+points via Bezier subdivision, which only works cleanly if a control
+point can sit off its segment's midpoint (it can't, here); not worth the
+complexity for what should be a rare edit-after-bowing case. Opening the
 inspector on a clip with no custom curve only *previews* the default
-shape — nothing is written until an actual add/drag/delete happens, so
-merely looking at a clip never silently converts it. Reset deletes
-`clip.curve` entirely, reverting to the procedural default. All three
-(add, drag, delete, reset) go through the normal undo/redo history like
-any other clip edit.
+shape — nothing is written until an actual add/drag/delete/bow happens,
+so merely looking at a clip never silently converts it. Reset deletes
+`clip.curve` entirely, reverting to the procedural default. All of these
+edits go through the normal undo/redo history like any other clip edit.
 
-Scope note: every segment is a plain straight line for now, not
-independently-adjustable curvature per segment the way LFO Tool actually
-offers (where each segment between two nodes has its own tension handle
-you can drag to bow it into a curve). Moving one node only ever reshapes
-the two segments touching it, never further out — a reasonable v1 proxy
-for the real thing, planned as a v2 addition (per-segment tension
-control, likely via a midpoint handle on each segment) once it's worth
-the added interaction surface.
+Every draggable point (nodes and segment handles alike) renders as a
+small visible dot with `pointer-events: none`, sitting on top of a much
+larger invisible circle (`.fx-curve-node-hit` / `.fx-curve-seg-hit`, 16
+and 14 SVG user units respectively) that actually owns the pointer
+handler — the visible dot alone was too small a target on a touch screen
+even though it looked perfectly grabbable. The `<svg>`'s own `viewBox` is
+padded out by `FX_CURVE_PAD` (18 units) beyond the plotted 200×120 area
+on every side for the same reason: a hit-circle centered right at the
+plot's edge (e.g. the default curve's locked `v=0` endpoints) would
+otherwise get silently clipped by the SVG's own overflow, shrinking
+exactly the touch target this exists to enlarge.
 
 Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three
