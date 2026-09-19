@@ -265,6 +265,28 @@ glance, same as LFO Tool's own grid. Static regardless of the curve's
 shape, so `drawFxCurveGrid` only needs to run once per inspector open
 rather than on every drag frame the way `drawFxCurve` does.
 
+**Display inversion for a falling filter sweep.** The stored curve is
+always "0 = neutral, 1 = full effect" — that's what the audio math
+reads, and it never changes. High Pass's cutoff *rises* as the effect
+ramps in (20Hz → 15kHz), so "up the graph = more effect" already lines
+up with "up the graph = higher cutoff frequency." Low Pass's cutoff
+*falls* (20000Hz → 20Hz), so the same raw-fraction curve would render
+as an identical-looking rise-then-drop shape while the actual cutoff
+frequency does the opposite thing — backwards for anyone reading the
+vertical axis as cutoff frequency, a DAW automation lane's usual
+convention, even though the audio itself is correct. `curveEditorInverted`
+(set in `renderFxCurveEditor` via `fxCurveEffectIsInverted`, true
+whenever an effect's `toHz < fromHz`) flips *only* the display:
+`toDisplayV`/`fromDisplayV` (both just `1 - v`) sit at every point data
+crosses the editor's screen-space boundary — rendering a node, segment
+handle, or path point, and reading a dragged pointer position back into
+stored data — so `curveEditorNodes`/`clip.curve` keep meaning exactly
+what they always have, and Low Pass's default shape now renders as the
+mirror image of High Pass's (starts near the top/neutral, dips to the
+bottom/peak effect, snaps back up) instead of looking identical to it.
+Existing saved Low Pass curves are unaffected audibly — this is a pure
+presentation-layer transform, not a data migration.
+
 Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three
 lanes) — it just wasn't obvious it was there, which is part of why this

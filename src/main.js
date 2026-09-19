@@ -1379,7 +1379,34 @@
   let curveEditorClip = null;
   let curveEditorNodes = null;
   let curveEditorSegCurves = null;
+  let curveEditorInverted = false;
   let selectedCurveNodeIndex = null;
+
+  // The stored curve is always "0 = neutral, 1 = full effect" -- that's
+  // what the audio math (scheduleFxSweep etc.) reads, and it never
+  // changes here. But for a filter sweep whose cutoff *falls* as the
+  // effect ramps in (Low Pass: 20000Hz -> 20Hz) rather than rises (High
+  // Pass: 20Hz -> 15000Hz), showing that raw fraction directly -- "up the
+  // graph" always meaning "more effect" -- makes Low Pass look identical
+  // in shape to High Pass while the actual cutoff frequency is doing the
+  // opposite thing, which reads as backwards to anyone thinking in terms
+  // of "the vertical axis is cutoff frequency" (a DAW automation lane's
+  // usual convention). curveEditorInverted flips *only* the display: up
+  // the graph consistently means "higher cutoff frequency" for both, so
+  // Low Pass's default shape renders as the mirror image of High Pass's
+  // (starts near the top, dips to the bottom, snaps back up) instead of
+  // an identical-looking rise-then-drop. toDisplayV/fromDisplayV are each
+  // other's inverse (both are just `1 - v`), used at every point data
+  // crosses the editor's screen-space boundary -- rendering a node/
+  // handle/path point, and reading a dragged pointer position back into
+  // stored data -- so curveEditorNodes/clip.curve keep meaning exactly
+  // what they always have.
+  function fxCurveEffectIsInverted(clip) {
+    const cfg = fxEffectFor(clip.effectId);
+    return typeof cfg.fromHz === "number" && typeof cfg.toHz === "number" && cfg.toHz < cfg.fromHz;
+  }
+  function toDisplayV(v) { return curveEditorInverted ? 1 - v : v; }
+  function fromDisplayV(v) { return curveEditorInverted ? 1 - v : v; }
 
   function curveToSvg(t, v) { return { x: t * FX_CURVE_W, y: FX_CURVE_H - v * FX_CURVE_H }; } // y flips: curve-space grows up, SVG grows down
   function svgToCurve(x, y) {
@@ -1494,7 +1521,7 @@
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
       const v = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, t, segCurves)));
-      const pt = curveToSvg(t, v);
+      const pt = curveToSvg(t, toDisplayV(v));
       d += (i === 0 ? "M " : "L ") + pt.x + " " + pt.y + " ";
     }
     return d;
@@ -1511,7 +1538,7 @@
     for (let i = 0; i < nodes.length - 1; i++) {
       const midT = (nodes[i].t + nodes[i + 1].t) / 2;
       const midV = Math.min(1, Math.max(0, fxCurveValueAtT(nodes, midT, segCurves)));
-      const pt = curveToSvg(midT, midV);
+      const pt = curveToSvg(midT, toDisplayV(midV));
       const isBowed = typeof segCurves[i] === "number";
       // A larger invisible circle carries the pointer handler so the
       // segment is easy to grab on a touch screen; the small visible dot
@@ -1535,7 +1562,7 @@
     nodes.forEach((node, i) => {
       const isEndpoint = i === 0 || i === nodes.length - 1;
       const isSelected = i === selectedCurveNodeIndex;
-      const pt = curveToSvg(node.t, node.v);
+      const pt = curveToSvg(node.t, toDisplayV(node.v));
       if (!isEndpoint) {
         // Same larger-invisible-hit-target pattern as the segment handles
         // above -- the visible dot is only 6-8 viewBox units (~10-15
@@ -1564,6 +1591,7 @@
   // edit happens, so merely looking at a clip never silently converts it.
   function renderFxCurveEditor(clip) {
     curveEditorClip = clip;
+    curveEditorInverted = fxCurveEffectIsInverted(clip);
     curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes(barsToSeconds(clip.duration));
     curveEditorSegCurves = (clip.curve && clip.curve.curves) || fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
@@ -1596,7 +1624,7 @@
       const prevT = curveEditorNodes[index - 1].t;
       const nextT = curveEditorNodes[index + 1].t;
       curveEditorNodes[index].t = Math.min(nextT - FX_CURVE_MIN_NODE_GAP, Math.max(prevT + FX_CURVE_MIN_NODE_GAP, curvePt.t));
-      curveEditorNodes[index].v = curvePt.v;
+      curveEditorNodes[index].v = fromDisplayV(curvePt.v);
       drawFxCurve();
     }
     function onUp(ev) {
@@ -1638,7 +1666,7 @@
       if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 3) moved = true;
       if (!moved) return;
       const svgPt = svgPointFromEvent(ev);
-      const dragV = svgToCurve(svgPt.x, svgPt.y).v;
+      const dragV = fromDisplayV(svgToCurve(svgPt.x, svgPt.y).v);
       const controlV = 2 * dragV - 0.5 * (p0.v + p1.v);
       curveEditorSegCurves[index] = Math.min(1, Math.max(0, controlV));
       drawFxCurve();
