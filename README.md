@@ -327,27 +327,56 @@ circles do), and `updateFxCurveUnsquish` now also re-runs
 `drawFxCurveGrid` on resize so text doesn't fall out of sync with a
 value it can't just read live off the CSS var.
 
-**Display inversion for a falling filter sweep.** The stored curve is
+**A standard EQ frequency axis for filter sweeps.** The stored curve is
 always "0 = neutral, 1 = full effect" — that's what the audio math
-reads, and it never changes. High Pass's cutoff *rises* as the effect
-ramps in (20Hz → 15kHz), so "up the graph = more effect" already lines
-up with "up the graph = higher cutoff frequency." Low Pass's cutoff
-*falls* (20000Hz → 20Hz), so the same raw-fraction curve would render
-as an identical-looking rise-then-drop shape while the actual cutoff
-frequency does the opposite thing — backwards for anyone reading the
-vertical axis as cutoff frequency, a DAW automation lane's usual
-convention, even though the audio itself is correct. `curveEditorInverted`
-(set in `renderFxCurveEditor` via `fxCurveEffectIsInverted`, true
-whenever an effect's `toHz < fromHz`) flips *only* the display:
-`toDisplayV`/`fromDisplayV` (both just `1 - v`) sit at every point data
-crosses the editor's screen-space boundary — rendering a node, segment
-handle, or path point, and reading a dragged pointer position back into
-stored data — so `curveEditorNodes`/`clip.curve` keep meaning exactly
-what they always have, and Low Pass's default shape now renders as the
-mirror image of High Pass's (starts near the top/neutral, dips to the
-bottom/peak effect, snaps back up) instead of looking identical to it.
-Existing saved Low Pass curves are unaffected audibly — this is a pure
-presentation-layer transform, not a data migration.
+reads, and it never changes. What changes per effect is what a given
+fraction *means* on screen, via `toDisplayV`/`fromDisplayV`, the one
+place data crosses the editor's screen-space boundary (rendering a
+node/handle/path point, and reading a dragged pointer position back
+into stored data) — so `curveEditorNodes`/`clip.curve` keep meaning
+exactly what they always have regardless of how differently two effects
+plot.
+
+For a filter-kind effect (High Pass, Low Pass — checked via `cfg.kind
+=== "filter"`, not merely whether `fromHz`/`toHz` exist, since washout
+has both but isn't "EQ-based" the way these two are), the fraction
+first converts to an actual Hz value off that effect's own `fromHz`/
+`toHz`, then that Hz value plots against a **fixed 20Hz–20000Hz log
+scale** (`fxFreqToAxisFrac`/`fxAxisFracToFreq`, `FX_FREQ_AXIS_MIN/MAX`)
+— the same range and the same standard decade tick marks (20/100/1k/
+10k/20k, `FX_FREQ_AXIS_TICKS`) an EQ's frequency response is normally
+plotted against, not whatever fraction of *this specific filter's own
+sweep* a gridline happens to sit at. An earlier version did the latter
+— fixed 25/50/75% positions, each labeled with whatever Hz value it
+happened to correspond to — which was technically accurate but produced
+numbers with no relationship to anything a musician would recognize
+(105Hz, 548Hz, 2.9kHz for High Pass), the "somewhat random feeling
+numbers" a real EQ never shows.
+
+Going through a real Hz value first, rather than plotting the raw
+fraction directly, also fixed the earlier display-inversion problem for
+free, with no separate logic needed: Low Pass's cutoff *falls* as the
+effect ramps in (20000Hz → 20Hz) while High Pass's *rises* (20Hz →
+15000Hz), and converting each through the same fixed frequency scale
+naturally plots a falling sweep as a falling line and a rising one as a
+rising line — the earlier version needed a dedicated `curveEditorInverted`
+flag and a manual `1 - v` flip to fake that same result by plotting the
+raw fraction upside-down for Low Pass specifically; now it's just what
+"convert to Hz, then plot the Hz" does on its own for either direction.
+One visible consequence worth knowing: a filter's peak no longer
+necessarily reaches the very top or bottom of the graph — High Pass's
+15000Hz peak sits just short of the 20000Hz scale ceiling, which is
+correct, not a bug, since the graph is a real, shared frequency axis
+now rather than one stretched to fill the frame for whatever range a
+given filter happens to sweep. Low Pass's own range is exactly
+20–20000Hz, so its curve still spans the full height, unchanged.
+
+Every other effect (phaser/washout/echo's dry/wet mix) has no frequency
+to convert through, so `toDisplayV`/`fromDisplayV` are the identity
+function there, and the axis stays the fixed 25/50/75% percentage grid
+it always was. Existing saved curves for any effect are unaffected
+audibly either way — this is a pure presentation-layer change, not a
+data migration.
 
 Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three

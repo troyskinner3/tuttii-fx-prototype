@@ -1393,34 +1393,51 @@
   let curveEditorClip = null;
   let curveEditorNodes = null;
   let curveEditorSegCurves = null;
-  let curveEditorInverted = false;
   let selectedCurveNodeIndex = null;
+
+  // A real EQ's frequency response always plots against the same fixed
+  // 20Hz-20kHz range with the same standard log-spaced marks, regardless
+  // of what any particular filter's own sweep covers -- that's what makes
+  // "100Hz" or "1kHz" a recognizable landmark instead of an arbitrary
+  // number, and it's the reference every filter-kind effect (High Pass,
+  // Low Pass) shares here too, via fxFreqToAxisFrac/fxAxisFracToFreq.
+  const FX_FREQ_AXIS_MIN = 20, FX_FREQ_AXIS_MAX = 20000;
+  const FX_FREQ_AXIS_TICKS = [20, 100, 1000, 10000, 20000];
+  function fxFreqToAxisFrac(hz) {
+    return (Math.log(hz) - Math.log(FX_FREQ_AXIS_MIN)) / (Math.log(FX_FREQ_AXIS_MAX) - Math.log(FX_FREQ_AXIS_MIN));
+  }
+  function fxAxisFracToFreq(frac) {
+    return FX_FREQ_AXIS_MIN * Math.pow(FX_FREQ_AXIS_MAX / FX_FREQ_AXIS_MIN, frac);
+  }
 
   // The stored curve is always "0 = neutral, 1 = full effect" -- that's
   // what the audio math (scheduleFxSweep etc.) reads, and it never
-  // changes here. But for a filter sweep whose cutoff *falls* as the
-  // effect ramps in (Low Pass: 20000Hz -> 20Hz) rather than rises (High
-  // Pass: 20Hz -> 15000Hz), showing that raw fraction directly -- "up the
-  // graph" always meaning "more effect" -- makes Low Pass look identical
-  // in shape to High Pass while the actual cutoff frequency is doing the
-  // opposite thing, which reads as backwards to anyone thinking in terms
-  // of "the vertical axis is cutoff frequency" (a DAW automation lane's
-  // usual convention). curveEditorInverted flips *only* the display: up
-  // the graph consistently means "higher cutoff frequency" for both, so
-  // Low Pass's default shape renders as the mirror image of High Pass's
-  // (starts near the top, dips to the bottom, snaps back up) instead of
-  // an identical-looking rise-then-drop. toDisplayV/fromDisplayV are each
-  // other's inverse (both are just `1 - v`), used at every point data
-  // crosses the editor's screen-space boundary -- rendering a node/
-  // handle/path point, and reading a dragged pointer position back into
-  // stored data -- so curveEditorNodes/clip.curve keep meaning exactly
-  // what they always have.
-  function fxCurveEffectIsInverted(clip) {
-    const cfg = fxEffectFor(clip.effectId);
-    return typeof cfg.fromHz === "number" && typeof cfg.toHz === "number" && cfg.toHz < cfg.fromHz;
+  // changes here; toDisplayV/fromDisplayV are the only place a filter
+  // sweep's data fraction and its plotted position ever meet. For a
+  // filter-kind effect (High Pass, Low Pass), the plotted position is the
+  // *actual cutoff frequency* on that fixed, standard scale -- not the
+  // raw fraction -- so Low Pass (20000Hz -> 20Hz, falling) automatically
+  // renders as the mirror image of High Pass (20Hz -> 15000Hz, rising)
+  // with no separate inversion logic needed: converting through a real
+  // Hz value first means a falling sweep just plots as a falling line,
+  // the same way it would on any other frequency-axis chart. It also
+  // means a filter's peak doesn't necessarily reach the very top/bottom
+  // of the graph -- High Pass's 15000Hz peak sits just short of the
+  // 20000Hz scale ceiling, which is accurate, not a bug: the graph is a
+  // real frequency axis now, not a stretched-to-fit effect-amount one.
+  // Every other effect (phaser/washout/echo's dry/wet mix) has no
+  // frequency to convert through, so it's simply the identity function.
+  function toDisplayV(v) {
+    const cfg = fxEffectFor(curveEditorClip.effectId);
+    if (cfg.kind !== "filter") return v;
+    return fxFreqToAxisFrac(cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, v));
   }
-  function toDisplayV(v) { return curveEditorInverted ? 1 - v : v; }
-  function fromDisplayV(v) { return curveEditorInverted ? 1 - v : v; }
+  function fromDisplayV(displayV) {
+    const cfg = fxEffectFor(curveEditorClip.effectId);
+    if (cfg.kind !== "filter") return displayV;
+    const hz = fxAxisFracToFreq(displayV);
+    return Math.log(hz / cfg.fromHz) / Math.log(cfg.toHz / cfg.fromHz);
+  }
 
   function curveToSvg(t, v) { return { x: t * FX_CURVE_W, y: FX_CURVE_H - v * FX_CURVE_H }; } // y flips: curve-space grows up, SVG grows down
   function svgToCurve(x, y) {
@@ -1538,12 +1555,25 @@
 
   // What the value axis actually measures depends on the effect: a filter
   // sweep's curve drives a cutoff frequency directly (fromHz/toHz), while
-  // phaser/washout/echo's curve drives a dry/wet mix (fromWet/toWet) --
-  // washout's curve happens to *also* drive a secondary, narrow-range
-  // highpass sweep alongside its mix, but mix is the dominant, more
-  // legible thing to label there, so it's treated the same as phaser/echo.
-  // formatValue takes a *display*-space fraction (0..1, already accounting
-  // for curveEditorInverted) since that's what a gridline's position means.
+  // phaser/washout/echo's curve drives a dry/wet mix (fromWet/toWet)
+  // instead -- washout's curve happens to *also* drive a secondary,
+  // narrow-range highpass sweep alongside its mix, but mix is the
+  // dominant, more legible thing to label there, so `kind === "filter"`
+  // (High Pass/Low Pass only, not washout) decides this, not merely
+  // whether fromHz/toHz exist.
+  //
+  // Returns a flat list of {frac, label} pairs in *display* space (0..1,
+  // already the plotted position -- see toDisplayV) so drawFxCurveGrid
+  // can place both axis styles identically without caring which one it
+  // has. A filter's ticks are the fixed 20/100/1k/10k/20k an EQ's
+  // frequency response is normally plotted against -- not this specific
+  // filter's own fromHz/toHz range -- so "100Hz" or "1kHz" is always the
+  // same recognizable landmark rather than some arbitrary-looking number
+  // that happens to fall out of a particular sweep's own endpoints (an
+  // earlier version of this axis did exactly that: fixed 25/50/75%
+  // *positions*, labeled with whatever Hz value each one happened to
+  // correspond to -- technically correct, but the numbers had no
+  // relationship to anything a musician would recognize).
   function fxFormatHz(hz) {
     if (hz >= 1000) {
       const k = hz / 1000;
@@ -1553,30 +1583,27 @@
   }
   function fxCurveYAxisInfo(clip) {
     const cfg = fxEffectFor(clip.effectId);
-    if (typeof cfg.fromHz === "number" && typeof cfg.toHz === "number") {
+    if (cfg.kind === "filter") {
       return {
         title: "Frequency (Hz)",
-        formatValue: (displayFrac) => fxFormatHz(cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, fromDisplayV(displayFrac))),
+        ticks: FX_FREQ_AXIS_TICKS.map(hz => ({ frac: fxFreqToAxisFrac(hz), label: fxFormatHz(hz) })),
       };
     }
     return {
       title: "Mix",
-      formatValue: (displayFrac) => Math.round(fromDisplayV(displayFrac) * 100) + "%",
+      ticks: [0.25, 0.5, 0.75].map(f => ({ frac: f, label: Math.round(f * 100) + "%" })),
     };
   }
 
-  // Quarter grid lines (faint, full-span) plus matching tick marks (solid,
-  // just outside the plot in the padding margin) on both axes -- reading a
-  // node's position as "about a quarter/half/three-quarters through" is
-  // the whole point, same as Xfer LFO Tool's own grid. The value axis
-  // (horizontal lines) stays at fixed 25/50/75% -- those positions are
-  // symmetric under inversion (v and 1-v land on the same three lines,
-  // just swapped), so only the label *text* needs fromDisplayV, not the
-  // line geometry. The time axis (vertical lines) is bar-aligned instead,
-  // via fxCurveBarTicks, so it can respond to the clip's actual duration
-  // (see startClipTrim's onUp, which re-runs this after a trim if this
-  // clip's curve editor happens to be open). Otherwise static regardless
-  // of the curve's shape, so this only needs to run once per inspector open.
+  // Grid lines (faint, full-span) plus matching tick marks (solid, just
+  // outside the plot in the padding margin) on both axes, each described
+  // by fxCurveYAxisInfo/fxCurveBarTicks as a flat {frac, label} list so
+  // this loop doesn't need to know which axis style it's drawing. The
+  // time axis (vertical lines) is bar-aligned via fxCurveBarTicks so it
+  // can respond to the clip's actual duration (see startClipTrim's onUp,
+  // which re-runs this after a trim if this clip's curve editor happens
+  // to be open). Otherwise static regardless of the curve's shape, so
+  // this only needs to run once per inspector open.
   function drawFxCurveGrid() {
     fxCurveGridGroup.innerHTML = "";
     const tickLen = 5;
@@ -1609,8 +1636,8 @@
       fxCurveGridGroup.appendChild(label);
     });
 
-    [0.25, 0.5, 0.75].forEach(v => {
-      const y = FX_CURVE_H - v * FX_CURVE_H;
+    yAxis.ticks.forEach(({ frac, label: labelText }) => {
+      const y = FX_CURVE_H - frac * FX_CURVE_H;
       const line = document.createElementNS(SVG_NS, "line");
       line.setAttribute("y1", y); line.setAttribute("y2", y);
       line.setAttribute("x1", 0); line.setAttribute("x2", FX_CURVE_W);
@@ -1637,7 +1664,7 @@
       label.setAttribute("text-anchor", "end");
       label.setAttribute("transform", fxCurveUnsquishAttr(labelX, y));
       label.setAttribute("class", "fx-curve-tick-label");
-      label.textContent = yAxis.formatValue(v);
+      label.textContent = labelText;
       fxCurveGridGroup.appendChild(label);
     });
   }
@@ -1718,7 +1745,6 @@
   // edit happens, so merely looking at a clip never silently converts it.
   function renderFxCurveEditor(clip) {
     curveEditorClip = clip;
-    curveEditorInverted = fxCurveEffectIsInverted(clip);
     curveEditorNodes = (clip.curve && clip.curve.nodes) || fxDefaultCurveNodes(barsToSeconds(clip.duration));
     curveEditorSegCurves = (clip.curve && clip.curve.curves) || fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
