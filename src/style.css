@@ -64,6 +64,20 @@
     overflow-y: visible;
     padding-bottom: 24px;
   }
+  /* The library list itself still needs its own bounded, independently-
+     scrolling region even in embedded mode -- otherwise a long FX/song
+     list just keeps pushing the page taller, and scrolling down to reach
+     an item near the bottom of the list also scrolls the timeline (the
+     actual drop target) off the top of the screen. Capping #songLibrary
+     with a fixed px (not a vh/dvh unit) keeps this independent of the
+     iframe's own reported height -- a viewport-relative cap here would
+     feed back into the auto-height postMessage loop above, since that
+     height is itself derived from how tall this box is allowed to grow. */
+  .embedded #songLibrary {
+    max-height: 380px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
   .embedded .inspector {
     /* position:fixed is relative to the iframe's own box -- once that box
        grows to match full-page content, "bottom:12px" could land well

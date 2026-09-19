@@ -460,6 +460,40 @@ partial resets (curve back to default, sliders left wherever they were)
 would leave a clip's actual sound out of sync with what "Reset" implies
 it did.
 
+### Mobile embed scrolling
+
+The Webflow embed (see the note at the top of this file) uses a bare
+`<iframe>`, which never auto-sizes to its content on its own. `.embedded`
+in style.css (set by a snippet in `index.html` that checks
+`window.self !== window.top`) drops the standalone page's pinned-shell
+layout in favor of one natural page height, and a `ResizeObserver` in
+main.js reports that height to the parent window on every layout change
+(`tuttii-embed-resize`) so the iframe can match it exactly — no fixed-size
+iframe either clipping a long library short or leaving a dead-space gap
+under a short one.
+
+That created a real bug on mobile: with nothing bounding it, a long FX
+library just kept pushing the whole page taller, and scrolling down to
+reach an item near the bottom of the list scrolled the timeline — the
+actual drag-and-drop target — off the top of the screen with it, since
+timeline and library share the same page-level scroll in embedded mode.
+Fixed by giving `#songLibrary` its own `max-height` (380px) and
+`overflow-y: auto` in embedded mode only — the library list scrolls
+independently within that bounded box, same as the standalone page's
+`.app-scroll` already does, while the timeline above it never moves.
+Short lists aren't affected (`max-height` only clips overflow, it doesn't
+force the box to that height), and the drag/drop gesture (`startChipDrag`
+in main.js) already worked entirely off `document.elementFromPoint` and
+viewport coordinates from `pointermove`/`pointerup`, so nesting the drag
+source in its own scroll container needed no changes there.
+
+The 380px figure is a fixed pixel value, deliberately not a `vh`/`dvh`
+unit: since the iframe's own height is *itself* derived from this page's
+reported `scrollHeight`, a viewport-relative cap here would be measuring
+against a number that the cap itself helps determine, feeding back into
+the resize loop above in a way that's needlessly hard to reason about.
+A fixed px has no such dependency.
+
 # Tuttii Mini Editor
 
 A browser-based mini music editor prototype — drag stem-agnostic song sections
