@@ -66,13 +66,34 @@
   function fxExceedsMaxLayers(candidate, excludeUid) {
     return fxOverlapCount(candidate, excludeUid) >= MAX_FX_LAYERS;
   }
-  // A clip's visual row: how many higher-priority (lower .layer) clips
-  // currently overlap it in time. Since .layer is a total order across
-  // every FX clip (see allocateTopFxLayer), this needs no separate
-  // sweep-line pass -- it's recomputed fresh on every render, so the lane
-  // only grows where clips actually coexist, not just because many exist.
+  // A clip's visual row. Earlier this was just a count of overlapping
+  // higher-priority (lower .layer) clips, which can leave a blank row: if
+  // a newly-dropped clip overlaps only *some* of an existing stack (not
+  // the ones already sitting in the top rows), every clip it does overlap
+  // gets pushed down by exactly one, but nothing moves into the row they
+  // vacated. Standard interval-graph coloring instead -- walk every FX
+  // clip from highest priority (lowest .layer) to lowest, and give each
+  // one the smallest row index not already claimed by an overlapping,
+  // higher-priority clip. Greedy-MEX coloring like this can't produce a
+  // gap: reaching row k at all requires rows 0..k-1 to already be taken
+  // by overlapping neighbors, by construction. Recomputed fresh on every
+  // call (no separate sweep-line pass or cached state to invalidate), so
+  // the lane only grows where clips actually coexist, not just because
+  // many exist.
   function fxSlotFor(clip) {
-    return clips.fx.filter(c => c.uid !== clip.uid && c.layer < clip.layer && fxTimeOverlap(c, clip)).length;
+    const ordered = [...clips.fx].sort((a, b) => a.layer - b.layer);
+    const slotByUid = new Map();
+    for (const c of ordered) {
+      const used = new Set();
+      for (const other of ordered) {
+        if (other === c) break; // only already-assigned (higher-priority) clips matter
+        if (fxTimeOverlap(other, c)) used.add(slotByUid.get(other.uid));
+      }
+      let slot = 0;
+      while (used.has(slot)) slot++;
+      slotByUid.set(c.uid, slot);
+    }
+    return slotByUid.get(clip.uid) ?? 0;
   }
   // New/duplicated FX clips always land on top (processed first), per the
   // "new layers go on top" convention -- a monotonically decreasing

@@ -26,11 +26,20 @@ Vocal/Beats' generic clip machinery, just without the reflow step.
 higher priority = processed first = visually closer to the top of the FX
 lane), assigned by a monotonically-decreasing allocator (`allocateTopFxLayer`)
 so a brand-new clip always lands strictly on top of everything else — no
-renumbering needed. A clip's visual row (`fxSlotFor`) is just "how many
-higher-priority clips currently overlap me in time," recomputed fresh on
-every render, so the lane only grows where clips actually coexist (capped
-at `MAX_FX_LAYERS`, 4 for now), not just because many exist somewhere on
-the timeline. Dragging a clip mostly vertically (past a small threshold)
+renumbering needed. A clip's visual row (`fxSlotFor`) used to just be "how
+many higher-priority clips currently overlap me in time," which sounds
+right but can leave a visibly blank row: if a new clip overlaps only some
+of an existing stack (not the ones already at the top), everything it
+does overlap gets pushed down by one, but nothing moves into the row they
+vacated. It's standard interval-graph coloring instead now — walk every
+FX clip from highest priority to lowest, giving each the smallest row
+index not already claimed by an overlapping, higher-priority clip. This
+greedy-MEX approach can't produce a gap (reaching row *k* at all requires
+rows `0..k-1` to already be taken by overlapping neighbors), while still
+being recomputed fresh on every render with no separate sweep-line pass,
+so the lane only grows where clips actually coexist (capped at
+`MAX_FX_LAYERS`, 4 for now), not just because many exist somewhere on the
+timeline. Dragging a clip mostly vertically (past a small threshold)
 swaps its priority with whichever overlapping clip is immediately next in
 that direction — the FX equivalent of dragging a layer up/down a stack in
 an image editor; dragging mostly horizontally still just repositions it in
