@@ -388,26 +388,41 @@ whole panel exists.
 Not every constant on an `FX_EFFECTS` entry belongs on the curve — the
 curve is one shaped 0..1 envelope, and some params (the phaser's LFO
 rate, say) are just a fixed number with no time dimension to sweep at
-all. Those get declared as `params: [{key, label, unit, min, max, step}]`
-on the effect's `FX_EFFECTS` entry (`key` names the field it overrides —
-`lfoRateHz` for the phaser's one so far) and rendered as sliders in
-`#fxParamControls`, directly beneath the graph. `fxParamValue(clip, cfg,
-key)` is every consumer's one lookup — `clip.params[key]` if the user's
-touched that slider, else `cfg[key]` — the same "preview the default
-until an actual edit happens" pattern `clip.curve` already uses, so
-merely opening the inspector never silently writes anything. The slider
-itself follows the existing volume-slider convention: `input` updates
-`clip.params` and the displayed value live, `change` (fires once, on
-release) is what actually calls `commitHistory()`, so dragging the
-slider doesn't spam undo/redo with one entry per pixel of travel.
+all. Those get declared in a `params` array on the effect's `FX_EFFECTS`
+entry and rendered in `#fxParamControls`, directly beneath the graph.
+`fxParamValue(clip, cfg, key)` is every audio-side consumer's one
+lookup — `clip.params[key]` if the user's touched that control, else
+`cfg[key]` — the same "preview the default until an actual edit
+happens" pattern `clip.curve` already uses, so merely opening the
+inspector never silently writes anything. Currently: the phaser's LFO
+rate (0.05–5Hz) and allpass center frequency (200–2000Hz — LFO *depth*,
+±600Hz, stays a constant for now, not exposed), and Echo Throw's
+feedback (0–0.85, capped there rather than the >0.9 territory that
+starts risking runaway buildup) and delay time.
 
-A slider is the obvious default for a plain numeric range like a rate or
-a depth, but it's a per-parameter judgment call, not a rule — a bounded
-number of musically-meaningful choices (Echo Throw's delay time as note
-divisions — 1/16, 1/8, 1/4 dotted, etc. — rather than an arbitrary
-continuous seconds value) would read better as a segmented/stepped
-control than a slider that mostly lands on values nobody would
-deliberately choose.
+Two control types exist, picked per param, not by a fixed rule — a
+plain numeric range (a rate, a depth, a feedback amount) is a slider
+(`buildFxSliderRow`); a bounded set of musically-meaningful choices is
+buttons instead (`buildFxStepsRow`, `type: "steps"` on the param), since
+a continuous slider there would mostly land on values nobody would
+deliberately choose. Echo Throw's delay time is exactly that case: note
+divisions (1/16 through 1/2, including dotted values — `1/8.` is the
+standard shorthand for 1.5× the plain note's duration) rather than a
+raw seconds value, matching how real delay plugins expose this control.
+Both types share `fxParamValue` and land in the same `clip.params`
+object; only the input widget and event wiring differ (the slider needs
+the volume-slider's `input`-updates-live/`change`-commits split so
+dragging doesn't spam undo/redo, since it fires continuously — a button
+tap is already one discrete, deliberate choice, so it just commits
+immediately). `createDelay(1.5)` (not the `1` the plain code would
+otherwise use) gives the longest option (a half note, 1s at the locked
+120bpm) headroom below the node's actual max.
+
+Reset (delete `clip.curve`) also deletes `clip.params`, returning every
+secondary control to its effect's own default alongside the curve —
+partial resets (curve back to default, sliders left wherever they were)
+would leave a clip's actual sound out of sync with what "Reset" implies
+it did.
 
 # Tuttii Mini Editor
 

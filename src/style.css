@@ -679,6 +679,18 @@
   }
   .fx-param-row input[type=range]::-moz-range-track { background: transparent; }
   .fx-param-value { font-size: 11px; color: var(--text-dim); width: 44px; text-align: right; flex-shrink: 0; }
+  .fx-param-steps { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; }
+  .fx-param-step-btn {
+    background: var(--ink-2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .fx-param-step-btn.active { color: var(--amber); border-color: var(--amber); background: rgba(240,169,62,0.12); }
   .fx-curve-svg {
     display: block;
     flex: 1;

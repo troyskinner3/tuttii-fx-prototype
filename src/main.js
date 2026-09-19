@@ -245,12 +245,32 @@
       // Secondary, non-curve-controlled knobs a user can adjust per clip --
       // rendered as sliders beneath the graph (see renderFxParamControls).
       // `key` names the FX_EFFECTS field this overrides (clip.params[key],
-      // falling back to this default when unset -- see fxParamValue).
-      params: [{ key: "lfoRateHz", label: "LFO Rate", unit: "Hz", min: 0.05, max: 5, step: 0.01 }] },
+      // falling back to this default when unset -- see fxParamValue). LFO
+      // depth (±600Hz) stays a constant for now, not exposed as a control.
+      params: [
+        { key: "lfoRateHz", label: "LFO Rate", unit: "Hz", min: 0.05, max: 5, step: 0.01 },
+        { key: "centerHz", label: "Center Freq", unit: "Hz", min: 200, max: 2000, step: 10 },
+      ] },
     { id: "washout", label: "Washout", icon: "🌊", durationsBars: [2, 4, 8, 16],
       kind: "washout", fromHz: 20, toHz: 300, fromWet: 0, toWet: 1 },
     { id: "echo-throw", label: "Echo Throw", icon: "🔁", durationsBars: [2, 4, 8, 16],
-      kind: "echo", delaySec: BAR_SECONDS / 8, feedback: 0.45, fromWet: 0, toWet: 1 },
+      kind: "echo", delaySec: BAR_SECONDS / 8, feedback: 0.45, fromWet: 0, toWet: 1,
+      // Delay time as note divisions (a bounded set of musically-meaningful
+      // choices) rather than a continuous slider, which would mostly land
+      // on values nobody would deliberately pick -- same reasoning real
+      // delay plugins use for this exact control. "1/8." etc. is the
+      // standard dotted-note shorthand (1.5x the plain note's duration).
+      params: [
+        { key: "delaySec", label: "Delay Time", type: "steps", options: [
+          { value: BAR_SECONDS / 16, label: "1/16" },
+          { value: BAR_SECONDS / 8, label: "1/8" },
+          { value: BAR_SECONDS / 8 * 1.5, label: "1/8." },
+          { value: BAR_SECONDS / 4, label: "1/4" },
+          { value: BAR_SECONDS / 4 * 1.5, label: "1/4." },
+          { value: BAR_SECONDS / 2, label: "1/2" },
+        ] },
+        { key: "feedback", label: "Feedback", min: 0, max: 0.85, step: 0.01 },
+      ] },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
   // A clip only ever gets a `params` object once a user actually moves a
@@ -1774,38 +1794,78 @@
     fxParamControls.innerHTML = "";
     const cfg = fxEffectFor(clip.effectId);
     (cfg.params || []).forEach(param => {
-      const row = document.createElement("div");
-      row.className = "fx-param-row";
-      const value = fxParamValue(clip, cfg, param.key);
-
-      const label = document.createElement("span");
-      label.className = "fx-param-label";
-      label.textContent = param.label;
-      row.appendChild(label);
-
-      const slider = document.createElement("input");
-      slider.type = "range";
-      slider.min = param.min;
-      slider.max = param.max;
-      slider.step = param.step;
-      slider.value = value;
-      row.appendChild(slider);
-
-      const valueEl = document.createElement("span");
-      valueEl.className = "fx-param-value";
-      const formatValue = (v) => Number(v).toFixed(2) + (param.unit ? " " + param.unit : "");
-      valueEl.textContent = formatValue(value);
-      row.appendChild(valueEl);
-
-      slider.addEventListener("input", () => {
-        if (!clip.params) clip.params = {};
-        clip.params[param.key] = Number(slider.value);
-        valueEl.textContent = formatValue(slider.value);
-      });
-      slider.addEventListener("change", commitHistory);
-
-      fxParamControls.appendChild(row);
+      if (param.type === "steps") { fxParamControls.appendChild(buildFxStepsRow(clip, cfg, param)); return; }
+      fxParamControls.appendChild(buildFxSliderRow(clip, cfg, param));
     });
+  }
+
+  function buildFxSliderRow(clip, cfg, param) {
+    const row = document.createElement("div");
+    row.className = "fx-param-row";
+    const value = fxParamValue(clip, cfg, param.key);
+
+    const label = document.createElement("span");
+    label.className = "fx-param-label";
+    label.textContent = param.label;
+    row.appendChild(label);
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = param.min;
+    slider.max = param.max;
+    slider.step = param.step;
+    slider.value = value;
+    row.appendChild(slider);
+
+    const valueEl = document.createElement("span");
+    valueEl.className = "fx-param-value";
+    const formatValue = (v) => Number(v).toFixed(2) + (param.unit ? " " + param.unit : "");
+    valueEl.textContent = formatValue(value);
+    row.appendChild(valueEl);
+
+    slider.addEventListener("input", () => {
+      if (!clip.params) clip.params = {};
+      clip.params[param.key] = Number(slider.value);
+      valueEl.textContent = formatValue(slider.value);
+    });
+    slider.addEventListener("change", commitHistory);
+
+    return row;
+  }
+
+  // A bounded set of musically-meaningful choices (e.g. note divisions for
+  // a delay time) reads better as buttons than a slider that would mostly
+  // land on values nobody deliberately picked. No live/committed split
+  // like the slider needs -- a tap is already a single, deliberate choice.
+  function buildFxStepsRow(clip, cfg, param) {
+    const row = document.createElement("div");
+    row.className = "fx-param-row fx-param-row-steps";
+
+    const label = document.createElement("span");
+    label.className = "fx-param-label";
+    label.textContent = param.label;
+    row.appendChild(label);
+
+    const group = document.createElement("div");
+    group.className = "fx-param-steps";
+    const currentValue = fxParamValue(clip, cfg, param.key);
+    param.options.forEach(opt => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "fx-param-step-btn" + (Math.abs(opt.value - currentValue) < 1e-6 ? " active" : "");
+      btn.textContent = opt.label;
+      btn.addEventListener("click", () => {
+        if (!clip.params) clip.params = {};
+        clip.params[param.key] = opt.value;
+        group.querySelectorAll(".fx-param-step-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        commitHistory();
+      });
+      group.appendChild(btn);
+    });
+    row.appendChild(group);
+
+    return row;
   }
 
   function commitCurveEdit() {
@@ -1930,10 +1990,12 @@
   fxCurveReset.addEventListener("click", () => {
     if (!curveEditorClip) return;
     delete curveEditorClip.curve;
+    delete curveEditorClip.params; // also reset any secondary-param sliders (LFO rate, delay time, etc.) back to their effect defaults
     curveEditorNodes = fxDefaultCurveNodes(barsToSeconds(curveEditorClip.duration));
     curveEditorSegCurves = fxDefaultSegCurves(curveEditorNodes.length);
     selectedCurveNodeIndex = null;
     drawFxCurve();
+    renderFxParamControls(curveEditorClip);
     commitHistory();
   });
 
@@ -2374,10 +2436,11 @@
 
       let node = input;
       const allpasses = [];
+      const centerHz = fxParamValue(clip, cfg, "centerHz");
       for (let i = 0; i < cfg.stages; i++) {
         const ap = track(ctx.createBiquadFilter());
         ap.type = "allpass";
-        ap.frequency.value = cfg.centerHz;
+        ap.frequency.value = centerHz;
         node.connect(ap);
         node = ap;
         allpasses.push(ap);
@@ -2430,19 +2493,22 @@
     if (cfg.kind === "echo") {
       // input -> dryGain -----------------\
       //       -> delay (with feedback) ---- +--> output
-      // Delay time and feedback are fixed (no curve control yet, per
-      // "start simple") -- only the dry/wet balance ramps in, so a longer
-      // hold on the effect means the repeats increasingly dominate.
+      // Delay time and feedback are per-clip params (see FX_EFFECTS'
+      // `params`), not curve-controlled -- only the dry/wet balance ramps
+      // in, so a longer hold on the effect means the repeats increasingly
+      // dominate. Max delay bumped to 1.5s (from the 1s a plain
+      // createDelay(1) call would cap at) so the longest note division
+      // option (a half note, 1s at the locked 120bpm) has headroom.
       const input = track(ctx.createGain());
       const output = track(ctx.createGain());
       const dryGain = track(ctx.createGain());
       const wetGain = track(ctx.createGain());
       dryGain.gain.value = 1;
       wetGain.gain.value = 0;
-      const delay = track(ctx.createDelay(1));
-      delay.delayTime.value = cfg.delaySec;
+      const delay = track(ctx.createDelay(1.5));
+      delay.delayTime.value = fxParamValue(clip, cfg, "delaySec");
       const feedback = track(ctx.createGain());
-      feedback.gain.value = cfg.feedback;
+      feedback.gain.value = fxParamValue(clip, cfg, "feedback");
 
       input.connect(dryGain).connect(output);
       input.connect(delay);
