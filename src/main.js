@@ -271,6 +271,20 @@
         ] },
         { key: "feedback", label: "Feedback", min: 0, max: 0.85, step: 0.01 },
       ] },
+    { id: "tremolo", label: "Tremolo", icon: "📳", durationsBars: [2, 4, 8, 16],
+      kind: "tremolo", lfoRateHz: 5, fromWet: 0, toWet: 1,
+      params: [{ key: "lfoRateHz", label: "LFO Rate", unit: "Hz", min: 0.5, max: 20, step: 0.1 }] },
+    { id: "autopan", label: "Auto-Pan", icon: "↔️", durationsBars: [2, 4, 8, 16],
+      kind: "autopan", lfoRateHz: 1, fromWet: 0, toWet: 1,
+      params: [{ key: "lfoRateHz", label: "LFO Rate", unit: "Hz", min: 0.1, max: 10, step: 0.1 }] },
+    { id: "bitcrush", label: "Bitcrusher", icon: "🕹️", durationsBars: [2, 4, 8, 16],
+      // Sample-rate reduction (the other half of a classic bitcrusher,
+      // giving it its gritty aliasing on top of this one's quantization
+      // "steps") needs real-time sample-and-hold DSP a stock Web Audio
+      // node can't do -- an AudioWorkletProcessor, not a quick add like
+      // this one -- so bit-depth reduction alone for now.
+      kind: "bitcrush", bitDepth: 4, fromWet: 0, toWet: 1,
+      params: [{ key: "bitDepth", label: "Bit Depth", unit: "bit", min: 1, max: 16, step: 1 }] },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
   // A clip only ever gets a `params` object once a user actually moves a
@@ -2416,6 +2430,42 @@
     });
   }
 
+  // Tremolo/Auto-pan share this: the curve controls an LFO's modulation
+  // *depth* rather than a dry/wet crossfade (there's no separate dry
+  // signal to blend against -- the whole signal always passes through the
+  // modulated node, just modulated more or less), so it's a single
+  // fromWet-to-toWet envelope handed to the caller as {tSec, depth}
+  // points rather than a pair of complementary gain values the way
+  // schedulePhaserSweep produces. Callers schedule whatever param(s) that
+  // depth actually drives themselves, since that differs per effect
+  // (tremolo needs two related gain values out of one depth; auto-pan
+  // needs just one).
+  function fxDepthEnvelope(clip, cfg, offsetIntoClipSec) {
+    const totalDurSec = barsToSeconds(clip.duration);
+    const startFrac = totalDurSec > 0 ? offsetIntoClipSec / totalDurSec : 1;
+    const depthAt = (frac) => cfg.fromWet + (cfg.toWet - cfg.fromWet) * frac;
+    const points = [{ tSec: offsetIntoClipSec, depth: depthAt(fxCurveFracAt(clip, startFrac)) }];
+    fxCurveScheduleBreakpoints(clip, totalDurSec, offsetIntoClipSec).forEach(({ tSec, frac }) => {
+      points.push({ tSec, depth: depthAt(frac) });
+    });
+    return points;
+  }
+
+  // A stair-stepped WaveShaperNode transfer curve: quantizes -1..1 down to
+  // 2^bitDepth discrete levels, the classic (and simplest, needing no
+  // custom real-time DSP) way to fake bit-depth reduction. Rebuilt fresh
+  // per buildFxUnit call, same as everything else here -- a bit-depth
+  // slider change takes effect on the next play(), not live mid-playback.
+  function fxBitcrushCurve(bitDepth) {
+    const steps = Math.pow(2, bitDepth);
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) {
+      const x = (i / (curve.length - 1)) * 2 - 1;
+      curve[i] = Math.round(x * steps) / steps;
+    }
+    return curve;
+  }
+
   // Builds one FX clip's audio unit. `track`, when provided, records every
   // node created so a later teardown pass can disconnect (and stop, for
   // anything with a lifecycle -- an LFO oscillator) everything this unit
@@ -2514,6 +2564,82 @@
       input.connect(delay);
       delay.connect(feedback).connect(delay);
       delay.connect(wetGain).connect(output);
+
+      return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
+    }
+    if (cfg.kind === "tremolo") {
+      // input -> gain (base value + LFO modulation) -> output. Depth 0
+      // leaves gain pinned at 1 (no modulation, no effect); depth 1 makes
+      // gain swing the full 0..1 range (silence at each trough) -- so the
+      // base sits at 1-depth/2 and the LFO's own swing is scaled to
+      // ±depth/2, keeping the two in lockstep off one depth value per
+      // fxDepthEnvelope point rather than two independently-curved params.
+      const gain = track(ctx.createGain());
+      gain.gain.value = 1;
+      const lfo = track(ctx.createOscillator());
+      lfo.type = "sine";
+      lfo.frequency.value = fxParamValue(clip, cfg, "lfoRateHz");
+      const lfoDepth = track(ctx.createGain());
+      lfoDepth.gain.value = 0;
+      lfo.connect(lfoDepth).connect(gain.gain);
+      lfo.start();
+      return {
+        clip, input: gain, output: gain,
+        automate: (at, offset) => {
+          fxDepthEnvelope(clip, cfg, offset).forEach(({ tSec, depth }, i) => {
+            const atTime = at + (tSec - offset);
+            const method = i === 0 ? "setValueAtTime" : "linearRampToValueAtTime";
+            gain.gain[method](1 - depth / 2, atTime);
+            lfoDepth.gain[method](depth / 2, atTime);
+          });
+        },
+      };
+    }
+    if (cfg.kind === "autopan") {
+      // input -> panner (center 0 + LFO modulation) -> output. Depth
+      // directly scales how far the LFO swings the pan position (0 = dead
+      // center, no movement; 1 = the full -1..1 stereo width) -- the
+      // panner's own base pan value never needs to move, only the LFO's
+      // depth does, so this is a single param out of fxDepthEnvelope
+      // rather than tremolo's related pair.
+      const panner = track(ctx.createStereoPanner());
+      panner.pan.value = 0;
+      const lfo = track(ctx.createOscillator());
+      lfo.type = "sine";
+      lfo.frequency.value = fxParamValue(clip, cfg, "lfoRateHz");
+      const lfoDepth = track(ctx.createGain());
+      lfoDepth.gain.value = 0;
+      lfo.connect(lfoDepth).connect(panner.pan);
+      lfo.start();
+      return {
+        clip, input: panner, output: panner,
+        automate: (at, offset) => {
+          panner.pan.setValueAtTime(0, at);
+          fxDepthEnvelope(clip, cfg, offset).forEach(({ tSec, depth }, i) => {
+            const atTime = at + (tSec - offset);
+            lfoDepth.gain[i === 0 ? "setValueAtTime" : "linearRampToValueAtTime"](depth, atTime);
+          });
+        },
+      };
+    }
+    if (cfg.kind === "bitcrush") {
+      // input -> dryGain -----------------\
+      //       -> waveshaper (bit-depth quantization) -> wetGain --- +--> output
+      // Same dry/wet crossfade shape as phaser/washout/echo -- the curve
+      // controls how much of the crushed signal blends in, not the crush
+      // amount itself (that's the Bit Depth slider, baked into the
+      // WaveShaper's curve at build time).
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      const shaper = track(ctx.createWaveShaper());
+      shaper.curve = fxBitcrushCurve(fxParamValue(clip, cfg, "bitDepth"));
+
+      input.connect(dryGain).connect(output);
+      input.connect(shaper).connect(wetGain).connect(output);
 
       return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
     }

@@ -58,7 +58,7 @@ stops every node the previous live-context run built, called both from
 accumulates across repeated play/pause cycles. (Not needed for exports —
 each one gets its own throwaway `OfflineAudioContext`.)
 
-Three effect types exist so far:
+Eight effect types exist so far:
 
 - **High Pass** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
   (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
@@ -110,6 +110,38 @@ Three effect types exist so far:
   fixed, not curve-controlled) with a 45% feedback loop, crossfaded in via
   the same dry/wet curve as phaser/washout. The longer a passage sits
   under this effect, the more the repeats dominate over the dry signal.
+- **Tremolo** (2/4/8/16-bar variants): amplitude modulation — a sine
+  `OscillatorNode` (`lfoRateHz`, 5Hz default) fans into a gain node's
+  `gain` param, riding on top of a base value that the curve also moves:
+  at curve value 0 the base sits at 1 and the LFO's own swing is scaled
+  to 0, so gain stays pinned at 1 (no modulation, silent-passthrough
+  neutral); as the curve rises toward 1, the base drops to 0.5 and the
+  LFO swing grows to ±0.5 in lockstep, so gain sweeps the full 0..1
+  range (silence at each trough) — one shared `depth` value out of
+  `fxDepthEnvelope` (shared with Auto-Pan, see below) drives both the
+  base and the swing together rather than two independently-curved
+  params. This is a modulation-depth envelope, not a dry/wet crossfade,
+  since there's no separate dry path to blend against. LFO rate is a
+  per-clip slider (0.5–20Hz).
+- **Auto-Pan** (2/4/8/16-bar variants): the same idea as tremolo but
+  panning instead of gain — a sine oscillator (`lfoRateHz`, 1Hz default)
+  drives a `StereoPannerNode`'s `pan` between `-depth` and `+depth`,
+  where `depth` itself ramps from 0 (curve 0, centered/neutral) up to 1
+  (curve 1, full hard-left-to-hard-right sweep) via the same
+  `fxDepthEnvelope` helper tremolo uses. The panner's own base pan value
+  never needs to move — only the LFO's depth does — so this is a single
+  param out of `fxDepthEnvelope` rather than tremolo's related pair, and
+  again a depth envelope rather than a dry/wet crossfade. LFO rate is a
+  per-clip slider (0.1–10Hz).
+- **Bitcrusher** (2/4/8/16-bar variants): sample-and-hold-free bit-depth
+  reduction via a `WaveShaperNode` — `fxBitcrushCurve(bitDepth)` builds a
+  stair-step transfer curve that quantizes amplitude to `2^bitDepth`
+  discrete levels, crossfaded against the dry signal with the usual
+  dry/wet curve (`schedulePhaserSweep`). Bit depth (1–16, default 4) is a
+  per-clip slider — lower values sound more crushed/lo-fi. Sample-rate
+  reduction (the other classic bitcrusher knob, which needs a custom
+  `AudioWorkletProcessor` since Web Audio has no built-in downsampler)
+  isn't built yet.
 
 The stacking/layering system this all runs on (`.layer`, `fxSlotFor`,
 `allocateTopFxLayer`, `swapFxLayer`, the vertical-drag gesture) is
@@ -396,9 +428,13 @@ lookup — `clip.params[key]` if the user's touched that control, else
 happens" pattern `clip.curve` already uses, so merely opening the
 inspector never silently writes anything. Currently: the phaser's LFO
 rate (0.05–5Hz) and allpass center frequency (200–2000Hz — LFO *depth*,
-±600Hz, stays a constant for now, not exposed), and Echo Throw's
+±600Hz, stays a constant for now, not exposed), Echo Throw's
 feedback (0–0.85, capped there rather than the >0.9 territory that
-starts risking runaway buildup) and delay time.
+starts risking runaway buildup) and delay time, tremolo and auto-pan's
+LFO rate (0.5–20Hz and 0.1–10Hz respectively — the two don't share a
+slider range since a musically useful pan sweep reads much slower than
+a musically useful amplitude flutter), and the bitcrusher's bit depth
+(1–16, integer steps).
 
 Two control types exist, picked per param, not by a fixed rule — a
 plain numeric range (a rate, a depth, a feedback amount) is a slider
