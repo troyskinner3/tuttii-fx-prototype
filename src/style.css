@@ -614,9 +614,33 @@
     padding: 0;
   }
   .fx-curve-reset svg { width: 13px; height: 13px; }
+  .fx-curve-plot-row { display: flex; align-items: stretch; gap: 4px; }
+  .fx-curve-yaxis-title {
+    flex-shrink: 0;
+    width: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+  .fx-curve-xaxis-title {
+    text-align: center;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    margin: 3px 0 8px;
+  }
   .fx-curve-svg {
     display: block;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     height: 140px;
     background: var(--ink-2);
     border: 1px solid var(--border);
@@ -625,6 +649,20 @@
   }
   .fx-curve-grid-line { stroke: var(--text-dim); stroke-width: 1; opacity: 0.25; }
   .fx-curve-tick { stroke: var(--text-dim); stroke-width: 1.5; opacity: 1; }
+  .fx-curve-tick-label {
+    fill: var(--text-dim);
+    font-size: 9px;
+  }
+  .fx-curve-tick-label.y {
+    transform-box: fill-box;
+    transform-origin: right center;
+    transform: scaleX(var(--fx-curve-unsquish, 1));
+  }
+  .fx-curve-tick-label.x {
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scaleX(var(--fx-curve-unsquish, 1));
+  }
   .fx-curve-path { fill: none; stroke: var(--amber); stroke-width: 2.5; }
   /* preserveAspectRatio="none" stretches x/y independently to fill the box
      (the curve/grid are fine with that), which would otherwise squash

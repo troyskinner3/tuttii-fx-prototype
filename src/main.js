@@ -328,6 +328,7 @@
   const volSlider = document.getElementById("volSlider");
   const volVal = document.getElementById("volVal");
   const fxCurveSvg = document.getElementById("fxCurveSvg");
+  const fxCurveYAxisTitle = document.getElementById("fxCurveYAxisTitle");
   const fxCurvePath = document.getElementById("fxCurvePath");
   const fxCurveGridGroup = document.getElementById("fxCurveGridGroup");
   const fxCurveSegHandlesGroup = document.getElementById("fxCurveSegHandlesGroup");
@@ -1281,6 +1282,14 @@
 
       renderClips();
       selectClip(clip.uid);
+      // The curve editor's bar-axis labels are computed from clip.duration
+      // -- if this exact clip's curve is what's currently open (the
+      // inspector never auto-opens on a trim, but can already be open
+      // from an earlier tap), refresh just the grid/labels to match the
+      // new duration. The curve's own shape is unaffected (nodes are
+      // stored as time *fractions*, not absolute bars) so drawFxCurve()
+      // itself doesn't need to re-run.
+      if (curveEditorClip === clip) drawFxCurveGrid();
       commitHistory();
     }
     el.addEventListener("pointermove", onMove);
@@ -1351,10 +1360,14 @@
   // the plot's own edge -- e.g. the default curve's locked v=0 endpoints,
   // or a dragged node pinned to v=1 -- doesn't get silently clipped by the
   // SVG's own overflow, which would shrink exactly the touch target this
-  // padding exists to keep full-size.
-  const FX_CURVE_PAD = 18;
-  const FX_VIEWBOX_MINX = -FX_CURVE_PAD, FX_VIEWBOX_MINY = -FX_CURVE_PAD;
-  const FX_VIEWBOX_W = FX_CURVE_W + FX_CURVE_PAD * 2, FX_VIEWBOX_H = FX_CURVE_H + FX_CURVE_PAD * 2;
+  // padding exists to keep full-size. Asymmetric: bottom/left carry the
+  // axis tick labels (bar numbers, Hz/mix values) and need more room;
+  // top/right only ever need to fit a hit-circle's bleed.
+  const FX_CURVE_PAD_TOP = 18, FX_CURVE_PAD_RIGHT = 18;
+  const FX_CURVE_PAD_BOTTOM = 30, FX_CURVE_PAD_LEFT = 34;
+  const FX_VIEWBOX_MINX = -FX_CURVE_PAD_LEFT, FX_VIEWBOX_MINY = -FX_CURVE_PAD_TOP;
+  const FX_VIEWBOX_W = FX_CURVE_W + FX_CURVE_PAD_LEFT + FX_CURVE_PAD_RIGHT;
+  const FX_VIEWBOX_H = FX_CURVE_H + FX_CURVE_PAD_TOP + FX_CURVE_PAD_BOTTOM;
   // The minimum time-gap a node is ever allowed from its neighbors, as a
   // fraction of the clip -- purely a numerical safety floor (no zero- or
   // negative-width segment) during a drag, not a UX distance in itself,
@@ -1476,17 +1489,74 @@
     return result;
   }
 
+  // "1", "2", "4", "8"... -- the largest power-of-two-ish step (from this
+  // preferred set) that still keeps the whole clip to at most 4 segments,
+  // so a short clip gets a label on every bar and a long one doesn't drown
+  // in them. Interior boundaries only (1..totalBars-1): bar 0 and the
+  // final bar are already marked by the curve's own locked endpoint nodes,
+  // same reasoning as the value axis only labeling 25/50/75% and not 0/100%.
+  const FX_CURVE_BAR_TICK_STEPS = [1, 2, 4, 8, 16, 32, 64, 128, 256];
+  function fxCurveBarTicks(totalBars) {
+    if (!(totalBars > 0)) return [];
+    let interval = FX_CURVE_BAR_TICK_STEPS[FX_CURVE_BAR_TICK_STEPS.length - 1];
+    for (const step of FX_CURVE_BAR_TICK_STEPS) {
+      if (totalBars / step <= 4) { interval = step; break; }
+    }
+    const ticks = [];
+    for (let b = interval; b < totalBars; b += interval) ticks.push(b);
+    return ticks;
+  }
+
+  // What the value axis actually measures depends on the effect: a filter
+  // sweep's curve drives a cutoff frequency directly (fromHz/toHz), while
+  // phaser/washout/echo's curve drives a dry/wet mix (fromWet/toWet) --
+  // washout's curve happens to *also* drive a secondary, narrow-range
+  // highpass sweep alongside its mix, but mix is the dominant, more
+  // legible thing to label there, so it's treated the same as phaser/echo.
+  // formatValue takes a *display*-space fraction (0..1, already accounting
+  // for curveEditorInverted) since that's what a gridline's position means.
+  function fxFormatHz(hz) {
+    if (hz >= 1000) {
+      const k = hz / 1000;
+      return (Number.isInteger(k) ? k : k.toFixed(1)) + "k";
+    }
+    return Math.round(hz) + "";
+  }
+  function fxCurveYAxisInfo(clip) {
+    const cfg = fxEffectFor(clip.effectId);
+    if (typeof cfg.fromHz === "number" && typeof cfg.toHz === "number") {
+      return {
+        title: "Frequency (Hz)",
+        formatValue: (displayFrac) => fxFormatHz(cfg.fromHz * Math.pow(cfg.toHz / cfg.fromHz, fromDisplayV(displayFrac))),
+      };
+    }
+    return {
+      title: "Mix",
+      formatValue: (displayFrac) => Math.round(fromDisplayV(displayFrac) * 100) + "%",
+    };
+  }
+
   // Quarter grid lines (faint, full-span) plus matching tick marks (solid,
   // just outside the plot in the padding margin) on both axes -- reading a
   // node's position as "about a quarter/half/three-quarters through" is
-  // the whole point, same as Xfer LFO Tool's own grid. Static regardless
+  // the whole point, same as Xfer LFO Tool's own grid. The value axis
+  // (horizontal lines) stays at fixed 25/50/75% -- those positions are
+  // symmetric under inversion (v and 1-v land on the same three lines,
+  // just swapped), so only the label *text* needs fromDisplayV, not the
+  // line geometry. The time axis (vertical lines) is bar-aligned instead,
+  // via fxCurveBarTicks, so it can respond to the clip's actual duration
+  // (see startClipTrim's onUp, which re-runs this after a trim if this
+  // clip's curve editor happens to be open). Otherwise static regardless
   // of the curve's shape, so this only needs to run once per inspector open.
   function drawFxCurveGrid() {
     fxCurveGridGroup.innerHTML = "";
-    const fracs = [0.25, 0.5, 0.75];
     const tickLen = 5;
-    fracs.forEach(t => {
-      const x = t * FX_CURVE_W;
+    const totalBars = curveEditorClip.duration;
+    const yAxis = fxCurveYAxisInfo(curveEditorClip);
+    fxCurveYAxisTitle.textContent = yAxis.title;
+
+    fxCurveBarTicks(totalBars).forEach(bar => {
+      const x = (bar / totalBars) * FX_CURVE_W;
       const line = document.createElementNS(SVG_NS, "line");
       line.setAttribute("x1", x); line.setAttribute("x2", x);
       line.setAttribute("y1", 0); line.setAttribute("y2", FX_CURVE_H);
@@ -1498,8 +1568,17 @@
       tick.setAttribute("y1", FX_CURVE_H); tick.setAttribute("y2", FX_CURVE_H + tickLen);
       tick.setAttribute("class", "fx-curve-tick");
       fxCurveGridGroup.appendChild(tick);
+
+      const label = document.createElementNS(SVG_NS, "text");
+      label.setAttribute("x", x);
+      label.setAttribute("y", FX_CURVE_H + tickLen + 10);
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("class", "fx-curve-tick-label x");
+      label.textContent = String(bar);
+      fxCurveGridGroup.appendChild(label);
     });
-    fracs.forEach(v => {
+
+    [0.25, 0.5, 0.75].forEach(v => {
       const y = FX_CURVE_H - v * FX_CURVE_H;
       const line = document.createElementNS(SVG_NS, "line");
       line.setAttribute("y1", y); line.setAttribute("y2", y);
@@ -1512,6 +1591,15 @@
       tick.setAttribute("x1", 0); tick.setAttribute("x2", -tickLen);
       tick.setAttribute("class", "fx-curve-tick");
       fxCurveGridGroup.appendChild(tick);
+
+      const label = document.createElementNS(SVG_NS, "text");
+      label.setAttribute("x", -tickLen - 3);
+      label.setAttribute("y", y);
+      label.setAttribute("text-anchor", "end");
+      label.setAttribute("dominant-baseline", "middle");
+      label.setAttribute("class", "fx-curve-tick-label y");
+      label.textContent = yAxis.formatValue(v);
+      fxCurveGridGroup.appendChild(label);
     });
   }
 

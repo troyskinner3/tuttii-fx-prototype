@@ -236,11 +236,14 @@ larger invisible circle (`.fx-curve-node-hit` / `.fx-curve-seg-hit`, 16
 and 14 SVG user units respectively) that actually owns the pointer
 handler — the visible dot alone was too small a target on a touch screen
 even though it looked perfectly grabbable. The `<svg>`'s own `viewBox` is
-padded out by `FX_CURVE_PAD` (18 units) beyond the plotted 200×120 area
-on every side for the same reason: a hit-circle centered right at the
-plot's edge (e.g. the default curve's locked `v=0` endpoints) would
-otherwise get silently clipped by the SVG's own overflow, shrinking
-exactly the touch target this exists to enlarge.
+padded out beyond the plotted 200×120 area for the same reason: a
+hit-circle centered right at the plot's edge (e.g. the default curve's
+locked `v=0` endpoints) would otherwise get silently clipped by the
+SVG's own overflow, shrinking exactly the touch target this exists to
+enlarge. The padding is asymmetric (`FX_CURVE_PAD_TOP`/`_RIGHT` at 18
+units, `_BOTTOM`/`_LEFT` at 30/34) now that it also has to fit the axis
+tick labels below and to the left — top/right only ever need to clear a
+hit-circle's bleed, the same as before.
 
 The `<svg>` uses `preserveAspectRatio="none"` so the curve/grid can
 stretch to fill the box at a fixed height regardless of viewport width —
@@ -258,12 +261,57 @@ inspector opens on an FX clip and on window resize, so a dot reads as a
 true circle at any viewport width and stays a constant pixel size rather
 than growing with the box.
 
-Quarter grid lines (25/50/75%, faint) and matching tick marks (same
-positions, solid, just outside the plot in the padding margin) sit on
-both axes — reading a node as "about halfway through the section" at a
-glance, same as LFO Tool's own grid. Static regardless of the curve's
-shape, so `drawFxCurveGrid` only needs to run once per inspector open
-rather than on every drag frame the way `drawFxCurve` does.
+Grid lines and matching tick marks (same positions, solid, just outside
+the plot in the padding margin) sit on both axes, each now labeled —
+reading a node as "about halfway through the section, around 3kHz" at a
+glance, same as a real DAW automation lane. The two axes use different
+tick logic, though, since they mean different things: the value axis
+(horizontal lines) stays at fixed 25/50/75%, since "a proportion of the
+way from neutral to full effect" is meaningful at any clip length; the
+time axis (vertical lines) is bar-aligned instead via `fxCurveBarTicks`
+(the largest step from `[1,2,4,8,16,...]` that still keeps the clip to
+at most 4 segments — a label on every bar for a short clip, every few
+bars for a long one, and never a fractional bar number), since "25%
+through" isn't a bar count a musician thinks in. Both only label the
+interior ticks, the same reasoning as the value axis never labeling
+0%/100%: the locked endpoint nodes already mark the very start and end.
+
+Each axis's tick *values* are effect-aware (`fxCurveYAxisInfo`): a
+filter sweep's curve drives a cutoff frequency directly, so its axis
+reads "Frequency (Hz)" with real Hz values (`fxFormatHz`, e.g. `2.9k`)
+at each gridline — computed through `fromDisplayV` first, so an inverted
+Low Pass's labels correctly read as *decreasing* toward the bottom just
+like its curve does. Phaser/washout/echo's curve drives a dry/wet mix
+instead, so their axis reads "Mix" with percentages. (Washout's curve
+also drives a secondary, narrow-range highpass sweep alongside its mix,
+same as it always has — Mix is just the more legible thing to put on
+the axis, and that secondary sweep isn't itself independently editable
+that this axis would need to reflect.) The Y-axis title text is
+resolved per clip; the X-axis title ("Bars") is a static label — there
+was never a second axis semantics to account for there.
+
+The X-axis tick labels are the one part of this whole panel that can go
+stale without a re-render: a clip's node positions are stored as time
+*fractions*, so trimming doesn't touch `clip.curve` at all, but the bar
+*numbers* a given fraction corresponds to depend on `clip.duration`,
+which trimming changes directly. `startClipTrim`'s `onUp` re-runs
+`drawFxCurveGrid` (not a full `drawFxCurve` — the curve's own shape is
+unaffected) whenever `curveEditorClip` still points at the clip just
+trimmed, i.e. whenever that exact clip's curve editor happens to already
+be open (opening the inspector never happens automatically on a trim,
+but it can already be open from an earlier tap).
+
+Text elements get the same `--fx-curve-unsquish` correction as the
+circular markers, with one difference: `transform-origin` is pinned to
+the label's own anchor edge (`right center` for the right-aligned value
+labels, plain `center` for the centered bar labels, which is already
+where `text-anchor="middle"` anchors) rather than the shape's geometric
+center the way a circle uses. A circle scaling around its own center
+never visibly moves; text scaling around its center would, since a
+right- or center-anchored string's *edge* is what's meant to stay fixed
+against its tick, not its middle — pinning the origin there is what
+keeps a label flush against its own gridline at every viewport width
+instead of drifting off it as the correction factor changes.
 
 **Display inversion for a falling filter sweep.** The stored curve is
 always "0 = neutral, 1 = full effect" — that's what the audio math
