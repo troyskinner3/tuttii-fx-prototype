@@ -301,17 +301,31 @@ trimmed, i.e. whenever that exact clip's curve editor happens to already
 be open (opening the inspector never happens automatically on a trim,
 but it can already be open from an earlier tap).
 
-Text elements get the same `--fx-curve-unsquish` correction as the
-circular markers, with one difference: `transform-origin` is pinned to
-the label's own anchor edge (`right center` for the right-aligned value
-labels, plain `center` for the centered bar labels, which is already
-where `text-anchor="middle"` anchors) rather than the shape's geometric
-center the way a circle uses. A circle scaling around its own center
-never visibly moves; text scaling around its center would, since a
-right- or center-anchored string's *edge* is what's meant to stay fixed
-against its tick, not its middle — pinning the origin there is what
-keeps a label flush against its own gridline at every viewport width
-instead of drifting off it as the correction factor changes.
+Text elements need the same `--fx-curve-unsquish` correction as the
+circular markers, but can't use the same mechanism: the circles get it
+via a CSS `transform-box: fill-box`, which computes the scale's pivot
+from the element's own rendered bounding box. That's reliable for a
+circle, but WebKit has real bugs combining `fill-box` with
+`dominant-baseline` (used to vertically center the value-axis labels on
+their gridline) on SVG text specifically — confirmed on a real iPhone,
+where the tick labels rendered as overlapping, misaligned mess despite
+looking perfectly clean in Chromium the whole time it was being built,
+which is exactly how it went unnoticed until then. `fxCurveUnsquishAttr`
+sidesteps bounding-box computation entirely: it sets an explicit SVG
+`transform` attribute, `translate(px,py) scale(unsquish,1)
+translate(-px,-py)`, pivoting on the label's own known anchor
+coordinate (so it inherently stays flush against its tick, no
+bounding-box agreement between browsers required) rather than an
+implicitly-computed one. The vertical centering that used
+`dominant-baseline="middle"` was replaced the same way, with a manual
+baseline offset (`y + FX_CURVE_LABEL_FONT_SIZE * 0.32`) instead — the
+same technique many chart libraries use to avoid `dominant-baseline`
+cross-browser inconsistency altogether. `fxCurveUnsquishValue` mirrors
+the CSS custom property as a plain number so text has something to bake
+into that attribute at draw time (rather than reading it live like the
+circles do), and `updateFxCurveUnsquish` now also re-runs
+`drawFxCurveGrid` on resize so text doesn't fall out of sync with a
+value it can't just read live off the CSS var.
 
 **Display inversion for a falling filter sweep.** The stored curve is
 always "0 = neutral, 1 = full effect" — that's what the audio math

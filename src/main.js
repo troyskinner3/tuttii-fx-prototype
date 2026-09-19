@@ -1355,6 +1355,7 @@
   // nothing writes to clip.curve until an actual edit happens (see
   // commitCurveEdit).
   const FX_CURVE_W = 200, FX_CURVE_H = 120; // the plotted curve area, in SVG user units
+  const FX_CURVE_LABEL_FONT_SIZE = 9; // must match .fx-curve-tick-label's font-size in style.css
   // fxCurveSvg's actual viewBox is padded out by this much on every side
   // (see index.html) so that a node/segment hit-circle centered right at
   // the plot's own edge -- e.g. the default curve's locked v=0 endpoints,
@@ -1448,14 +1449,42 @@
   // to whichever axis is more constrained (in practice always the fixed
   // height) -- so a dot reads as a true circle at any viewport width, and
   // stays the same pixel size rather than growing with the box.
+  // Mirrors the CSS custom property below as a plain number -- text labels
+  // (see drawFxCurveGrid) can't use the same transform-box: fill-box CSS
+  // trick the circles use (WebKit has real bugs combining fill-box with
+  // dominant-baseline on SVG text -- confirmed by a real-device screenshot
+  // rendering the tick labels as overlapping, misaligned mess despite
+  // looking perfectly fine in Chromium); they instead need this value
+  // baked into an explicit, per-element `transform` attribute at draw
+  // time, see fxCurveUnsquishAttr.
+  let fxCurveUnsquishValue = 1;
   function updateFxCurveUnsquish() {
     const rect = fxCurveSvg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const scaleX = rect.width / FX_VIEWBOX_W;
     const scaleY = rect.height / FX_VIEWBOX_H;
-    fxCurveSvg.style.setProperty("--fx-curve-unsquish", scaleY / scaleX);
+    fxCurveUnsquishValue = scaleY / scaleX;
+    fxCurveSvg.style.setProperty("--fx-curve-unsquish", fxCurveUnsquishValue);
+    // Circles re-read the CSS var live and repaint themselves for free, but
+    // text bakes the value in at draw time -- redraw so a resize (without
+    // a fresh inspector open or a trim, the other two triggers) doesn't
+    // leave labels using a stale factor.
+    if (curveEditorClip) drawFxCurveGrid();
   }
   window.addEventListener("resize", updateFxCurveUnsquish);
+
+  // Scales a text element by fxCurveUnsquishValue around an explicit pivot
+  // point (px, py) -- the label's own anchor coordinate, e.g. (x, y) for a
+  // text-anchor="middle" label or the (x, y) text-anchor="end" sits at --
+  // rather than relying on the browser to compute the element's own
+  // bounding box (what transform-box: fill-box does, and where the
+  // cross-browser inconsistency creeps in). An explicit SVG `transform`
+  // attribute pivoting on a coordinate we already know is unambiguous:
+  // no bounding-box computation involved at all, so nothing for a layout
+  // engine to disagree about.
+  function fxCurveUnsquishAttr(px, py) {
+    return `translate(${px} ${py}) scale(${fxCurveUnsquishValue} 1) translate(${-px} ${-py})`;
+  }
 
   function fxDefaultSegCurves(nodeCount) {
     return new Array(Math.max(0, nodeCount - 1)).fill(null);
@@ -1569,11 +1598,13 @@
       tick.setAttribute("class", "fx-curve-tick");
       fxCurveGridGroup.appendChild(tick);
 
+      const labelX = x, labelY = FX_CURVE_H + tickLen + 10;
       const label = document.createElementNS(SVG_NS, "text");
-      label.setAttribute("x", x);
-      label.setAttribute("y", FX_CURVE_H + tickLen + 10);
+      label.setAttribute("x", labelX);
+      label.setAttribute("y", labelY);
       label.setAttribute("text-anchor", "middle");
-      label.setAttribute("class", "fx-curve-tick-label x");
+      label.setAttribute("transform", fxCurveUnsquishAttr(labelX, labelY));
+      label.setAttribute("class", "fx-curve-tick-label");
       label.textContent = String(bar);
       fxCurveGridGroup.appendChild(label);
     });
@@ -1592,12 +1623,20 @@
       tick.setAttribute("class", "fx-curve-tick");
       fxCurveGridGroup.appendChild(tick);
 
+      // dominant-baseline="middle" would center this vertically on the
+      // gridline, but that property has real cross-browser inconsistencies
+      // combined with an SVG transform (confirmed on a real iPhone,
+      // rendering as overlapping/misaligned text despite looking correct
+      // in Chromium) -- a manual offset off the default alphabetic
+      // baseline sidesteps it entirely and is exactly as reliable as the
+      // X-axis labels' own (already-alphabetic-baseline) positioning.
+      const labelX = -tickLen - 3, labelY = y + FX_CURVE_LABEL_FONT_SIZE * 0.32;
       const label = document.createElementNS(SVG_NS, "text");
-      label.setAttribute("x", -tickLen - 3);
-      label.setAttribute("y", y);
+      label.setAttribute("x", labelX);
+      label.setAttribute("y", labelY);
       label.setAttribute("text-anchor", "end");
-      label.setAttribute("dominant-baseline", "middle");
-      label.setAttribute("class", "fx-curve-tick-label y");
+      label.setAttribute("transform", fxCurveUnsquishAttr(labelX, y));
+      label.setAttribute("class", "fx-curve-tick-label");
       label.textContent = yAxis.formatValue(v);
       fxCurveGridGroup.appendChild(label);
     });

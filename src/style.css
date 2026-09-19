@@ -649,19 +649,17 @@
   }
   .fx-curve-grid-line { stroke: var(--text-dim); stroke-width: 1; opacity: 0.25; }
   .fx-curve-tick { stroke: var(--text-dim); stroke-width: 1.5; opacity: 1; }
+  /* The squish correction lives on an explicit per-element `transform`
+     attribute (see fxCurveUnsquishAttr in main.js) pivoting on the
+     label's own anchor coordinate, not transform-box: fill-box -- WebKit
+     has real bugs combining fill-box with dominant-baseline on SVG text
+     (confirmed on a real device; Chromium rendered it fine, obscuring
+     the bug during development), and an explicit pivot sidesteps
+     bounding-box computation, and the cross-browser disagreement about
+     it, entirely. */
   .fx-curve-tick-label {
     fill: var(--text-dim);
     font-size: 9px;
-  }
-  .fx-curve-tick-label.y {
-    transform-box: fill-box;
-    transform-origin: right center;
-    transform: scaleX(var(--fx-curve-unsquish, 1));
-  }
-  .fx-curve-tick-label.x {
-    transform-box: fill-box;
-    transform-origin: center;
-    transform: scaleX(var(--fx-curve-unsquish, 1));
   }
   .fx-curve-path { fill: none; stroke: var(--amber); stroke-width: 2.5; }
   /* preserveAspectRatio="none" stretches x/y independently to fill the box
