@@ -88,11 +88,11 @@ Three effect types exist so far:
   filter sweeps but via **linear** interpolation (`schedulePhaserSweep`)
   rather than exponential — a proportion like
   dry/wet has no meaningful "ratio," and 0 is a needed endpoint that
-  `exponentialRampToValueAtTime` can't reach at all. Deliberately simple
-  for this first pass, per an explicit "start simple, iterate later": fixed
-  LFO rate (not tied to clip length), no feedback/resonance path, and the
-  curve controls only dry/wet — allpass center frequency (800Hz) and LFO
-  depth (±600Hz) are constants for now, not curve-controlled.
+  `exponentialRampToValueAtTime` can't reach at all. LFO rate is now a
+  per-clip slider (see "Secondary controls" below); no feedback/resonance
+  path yet, and the curve still controls only dry/wet — allpass center
+  frequency (800Hz) and LFO depth (±600Hz) remain constants, not
+  curve-controlled or exposed as a control yet.
 - **Washout** (2/4/8/16-bar variants): a synthetic-impulse reverb
   wash (`reverbImpulseBuffer` — 2.5s of exponentially-decaying stereo white
   noise through a `ConvolverNode`, since there's no impulse-response audio
@@ -382,6 +382,32 @@ Delete already worked for FX clips before this curve editor existed (the
 inspector's shared duplicate/delete icons are generic across all three
 lanes) — it just wasn't obvious it was there, which is part of why this
 whole panel exists.
+
+### Secondary controls
+
+Not every constant on an `FX_EFFECTS` entry belongs on the curve — the
+curve is one shaped 0..1 envelope, and some params (the phaser's LFO
+rate, say) are just a fixed number with no time dimension to sweep at
+all. Those get declared as `params: [{key, label, unit, min, max, step}]`
+on the effect's `FX_EFFECTS` entry (`key` names the field it overrides —
+`lfoRateHz` for the phaser's one so far) and rendered as sliders in
+`#fxParamControls`, directly beneath the graph. `fxParamValue(clip, cfg,
+key)` is every consumer's one lookup — `clip.params[key]` if the user's
+touched that slider, else `cfg[key]` — the same "preview the default
+until an actual edit happens" pattern `clip.curve` already uses, so
+merely opening the inspector never silently writes anything. The slider
+itself follows the existing volume-slider convention: `input` updates
+`clip.params` and the displayed value live, `change` (fires once, on
+release) is what actually calls `commitHistory()`, so dragging the
+slider doesn't spam undo/redo with one entry per pixel of travel.
+
+A slider is the obvious default for a plain numeric range like a rate or
+a depth, but it's a per-parameter judgment call, not a rule — a bounded
+number of musically-meaningful choices (Echo Throw's delay time as note
+divisions — 1/16, 1/8, 1/4 dotted, etc. — rather than an arbitrary
+continuous seconds value) would read better as a segmented/stepped
+control than a slider that mostly lands on values nobody would
+deliberately choose.
 
 # Tuttii Mini Editor
 

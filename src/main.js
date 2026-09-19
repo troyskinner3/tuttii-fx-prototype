@@ -241,13 +241,24 @@
       kind: "filter", filterType: "lowpass", fromHz: 20000, toHz: 20 },
     { id: "phaser", label: "Phaser", icon: "🌀", durationsBars: [2, 4, 8, 16],
       kind: "phaser", stages: 6, centerHz: 800, lfoRateHz: 0.3, lfoDepthHz: 600,
-      fromWet: 0, toWet: 1 },
+      fromWet: 0, toWet: 1,
+      // Secondary, non-curve-controlled knobs a user can adjust per clip --
+      // rendered as sliders beneath the graph (see renderFxParamControls).
+      // `key` names the FX_EFFECTS field this overrides (clip.params[key],
+      // falling back to this default when unset -- see fxParamValue).
+      params: [{ key: "lfoRateHz", label: "LFO Rate", unit: "Hz", min: 0.05, max: 5, step: 0.01 }] },
     { id: "washout", label: "Washout", icon: "🌊", durationsBars: [2, 4, 8, 16],
       kind: "washout", fromHz: 20, toHz: 300, fromWet: 0, toWet: 1 },
     { id: "echo-throw", label: "Echo Throw", icon: "🔁", durationsBars: [2, 4, 8, 16],
       kind: "echo", delaySec: BAR_SECONDS / 8, feedback: 0.45, fromWet: 0, toWet: 1 },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
+  // A clip only ever gets a `params` object once a user actually moves a
+  // slider (same "preview the default until edited" pattern as
+  // clip.curve) -- until then every param reads straight off FX_EFFECTS.
+  function fxParamValue(clip, cfg, key) {
+    return (clip.params && clip.params[key] !== undefined) ? clip.params[key] : cfg[key];
+  }
 
   // ---------- Analytics ----------
   // Fires once per page load, the first time the user does something that
@@ -336,6 +347,7 @@
   const fxCurveAddNode = document.getElementById("fxCurveAddNode");
   const fxCurveDeleteNode = document.getElementById("fxCurveDeleteNode");
   const fxCurveReset = document.getElementById("fxCurveReset");
+  const fxParamControls = document.getElementById("fxParamControls");
   const songLibrary = document.getElementById("songLibrary");
   const libraryTabs = document.getElementById("libraryTabs");
   const librarySubtabs = document.getElementById("librarySubtabs");
@@ -1750,6 +1762,50 @@
     selectedCurveNodeIndex = null;
     drawFxCurveGrid();
     drawFxCurve();
+    renderFxParamControls(clip);
+  }
+
+  // Secondary controls for whatever an effect has that isn't part of its
+  // shaped curve -- currently just the phaser's LFO rate, declared per
+  // effect via FX_EFFECTS[].params. Rebuilt fresh per inspector open,
+  // same as the curve itself; empty (and collapsed via
+  // .fx-param-controls:empty) for an effect with no such params.
+  function renderFxParamControls(clip) {
+    fxParamControls.innerHTML = "";
+    const cfg = fxEffectFor(clip.effectId);
+    (cfg.params || []).forEach(param => {
+      const row = document.createElement("div");
+      row.className = "fx-param-row";
+      const value = fxParamValue(clip, cfg, param.key);
+
+      const label = document.createElement("span");
+      label.className = "fx-param-label";
+      label.textContent = param.label;
+      row.appendChild(label);
+
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = param.min;
+      slider.max = param.max;
+      slider.step = param.step;
+      slider.value = value;
+      row.appendChild(slider);
+
+      const valueEl = document.createElement("span");
+      valueEl.className = "fx-param-value";
+      const formatValue = (v) => Number(v).toFixed(2) + (param.unit ? " " + param.unit : "");
+      valueEl.textContent = formatValue(value);
+      row.appendChild(valueEl);
+
+      slider.addEventListener("input", () => {
+        if (!clip.params) clip.params = {};
+        clip.params[param.key] = Number(slider.value);
+        valueEl.textContent = formatValue(slider.value);
+      });
+      slider.addEventListener("change", commitHistory);
+
+      fxParamControls.appendChild(row);
+    });
   }
 
   function commitCurveEdit() {
@@ -2330,7 +2386,7 @@
 
       const lfo = track(ctx.createOscillator());
       lfo.type = "sine";
-      lfo.frequency.value = cfg.lfoRateHz;
+      lfo.frequency.value = fxParamValue(clip, cfg, "lfoRateHz");
       const lfoDepth = track(ctx.createGain());
       lfoDepth.gain.value = cfg.lfoDepthHz;
       lfo.connect(lfoDepth);

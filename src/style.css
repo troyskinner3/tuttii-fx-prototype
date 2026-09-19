@@ -637,6 +637,48 @@
     color: var(--text-dim);
     margin: 3px 0 8px;
   }
+  /* Secondary, non-curve controls for whatever a given effect has that
+     isn't part of the shaped 0..1 envelope -- e.g. the phaser's LFO
+     rate. Empty and collapsed (no margin) for effects with none. */
+  .fx-param-controls:empty { display: none; }
+  .fx-param-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .fx-param-row:last-child { margin-bottom: 0; }
+  .fx-param-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    width: 62px;
+  }
+  .fx-param-row input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    outline: none;
+  }
+  .fx-param-row input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--ink);
+    border: 3px solid var(--amber);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    cursor: pointer;
+  }
+  .fx-param-row input[type=range]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--ink);
+    border: 3px solid var(--amber);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    cursor: pointer;
+  }
+  .fx-param-row input[type=range]::-moz-range-track { background: transparent; }
+  .fx-param-value { font-size: 11px; color: var(--text-dim); width: 44px; text-align: right; flex-shrink: 0; }
   .fx-curve-svg {
     display: block;
     flex: 1;
