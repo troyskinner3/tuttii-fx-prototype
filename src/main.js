@@ -453,6 +453,7 @@
   const stemLaneEls = {};
   STEM_KEYS.forEach(k => { stemLaneEls[k] = document.getElementById("stemLane" + k[0].toUpperCase() + k.slice(1)); });
   const stemPreviewHint = document.getElementById("stemPreviewHint");
+  const stemSourceHint = document.getElementById("stemSourceHint");
   const vocalIndicatorRow = document.getElementById("vocalIndicatorRow");
   const vocalIndicatorLane = document.getElementById("vocalIndicatorLane");
   const beatsIndicatorRow = document.getElementById("beatsIndicatorRow");
@@ -900,15 +901,18 @@
 
     // FX chips only drop into the FX lane; everything else (songs/silence)
     // only drops into Vocal/Beats, including their secondary lanes when
-    // expanded (hidden ones are simply unreachable by elementFromPoint,
-    // so listing them here even while collapsed is harmless) -- keeps a
-    // filter sweep from landing in an audio lane or vice versa.
+    // expanded, and -- while a Beats lane is exploded -- directly onto one
+    // of its six stem rows, to swap that one instrument's content in from
+    // a different song's section (see dropSectionAt's "stem" branch).
+    // Hidden lanes are simply unreachable by elementFromPoint, so listing
+    // them here even while collapsed/not-exploded is harmless.
+    const allLanes = [vocalLane, beatsLane, fxLane, vocalLane2, beatsLane2, ...Object.values(stemLaneEls)];
     function validLanesFor() {
-      return sec.isFx ? [fxLane] : [vocalLane, beatsLane, vocalLane2, beatsLane2];
+      return sec.isFx ? [fxLane] : [vocalLane, beatsLane, vocalLane2, beatsLane2, ...Object.values(stemLaneEls)];
     }
 
     function updateHighlight(x, y) {
-      [vocalLane, beatsLane, fxLane, vocalLane2, beatsLane2].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
+      allLanes.forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
       const el = document.elementFromPoint(x, y);
       const laneEl = el && el.closest(".row-lane");
       const valid = laneEl && validLanesFor().includes(laneEl);
@@ -936,13 +940,13 @@
       }
       if (type !== hoverType) {
         hoverType = type;
-        ghost.classList.remove("vocal", "beats", "vocal2", "beats2", "fx", "neutral");
+        ghost.classList.remove("vocal", "beats", "vocal2", "beats2", "fx", "stem", "neutral");
         ghost.classList.add(hoverType || "neutral");
       }
     }
 
     function clearHighlight() {
-      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
+      allLanes.forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
     }
 
     function onMove(ev) {
@@ -985,7 +989,7 @@
           const type = lane.dataset.track;
           const rect = lane.getBoundingClientRect();
           const cursorBars = pxToBars(ev.clientX - rect.left);
-          dropSectionAt(sec, type, songName, cursorBars);
+          dropSectionAt(sec, type, songName, cursorBars, lane);
         }
         if (ghost) ghost.remove();
       } else {
@@ -1006,7 +1010,7 @@
   //   pushing that clip (and anything after it) forward by exactly enough bars.
   // - Dropped in open space -> placed centered under the cursor, snapped to grid.
   // A final left-to-right pass then closes any remaining overlaps that result.
-  function dropSectionAt(sec, type, songName, cursorBars) {
+  function dropSectionAt(sec, type, songName, cursorBars, laneEl) {
     const clip = {
       uid: uidCounter++,
       track: type,
@@ -1067,6 +1071,45 @@
       if (singleSlotExceedsCap(clips[type], { position: snappedPos, duration: clip.duration }, null)) return;
       clip.position = snappedPos;
       clips[type].push(clip);
+    } else if (type === "stem") {
+      // Dropped directly onto one exploded stem row -- swap that one
+      // instrument's content in from this section, replacing whatever
+      // (if anything) already occupied that spot in the same row. Only
+      // reachable while a Beats lane is actually exploded (the rows are
+      // display:none, hence unreachable by elementFromPoint, otherwise).
+      const stemKey = laneEl.dataset.stemKey;
+      const stemLane = explodedLane;
+      if (stemLane === null) return;
+      const snappedPos = snap(cursorBars - clip.duration / 2, 1);
+      const displaced = clips.stem.filter(c =>
+        c.stemLane === stemLane && c.stemKey === stemKey && fxTimeOverlap(c, { position: snappedPos, duration: clip.duration }));
+      // An auto-generated mirror being displaced needs a tombstone too --
+      // see clips.deletedStems -- or the very next sync would just
+      // regenerate it right on top of the section that just replaced it.
+      displaced.forEach(d => {
+        if (!d.manuallyAdjusted) clips.deletedStems.push({ sourceUid: d.sourceUid, stemKey: d.stemKey, stemLane: d.stemLane });
+      });
+      clips.stem = clips.stem.filter(c => !displaced.includes(c));
+      // Exactly one clip displaced -- inherit its span, so the swap reads
+      // as "replace what's here" rather than resizing to this section's
+      // own original length. Anything else (empty space, or an existing
+      // overlap already messier than one-for-one) falls back to a
+      // cursor-centered drop like every other freeform lane.
+      if (displaced.length === 1) {
+        clip.position = displaced[0].position;
+        clip.duration = displaced[0].duration;
+      } else {
+        clip.position = snappedPos;
+      }
+      clip.stemKey = stemKey;
+      clip.stemLane = stemLane;
+      // clip.label stays sec.label (the section's own name, e.g. "Intro 1")
+      // -- buildClipEl's stem branch renders STEM_LABELS[clip.stemKey] in
+      // the box itself regardless, same as every other stem, so the row
+      // still reads consistently; .label/.songName/.songId (already set
+      // above) are what the inspector surfaces for a replaced stem.
+      clip.manuallyAdjusted = true; // a deliberate swap-in, not an auto mirror
+      clips.stem.push(clip);
     } else {
       const arr = clips[type];
       let insertIdx = arr.length; // default: append at the end
@@ -1246,8 +1289,14 @@
     // itself is out of sight.
     const hasEditedStems = (clip.track === "beats" || clip.track === "beats2")
       && clips.stem.some(c => c.sourceUid === clip.uid && c.manuallyAdjusted);
+    // A stem swapped in from a different song's section (dropped directly
+    // onto its row, see dropSectionAt) rather than auto-mirrored or just
+    // resized -- .songId is otherwise never set on a stem clip, so its
+    // presence alone is the signal.
+    const isReplacedStem = clip.track === "stem" && !!clip.songId;
     el.className = "clip " + cssTrack + (clip.isSilence ? " silence" : "")
-      + (clip.uid === selectedUid ? " selected" : "") + (hasEditedStems ? " stem-edited" : "");
+      + (clip.uid === selectedUid ? " selected" : "") + (hasEditedStems ? " stem-edited" : "")
+      + (isReplacedStem ? " replaced" : "");
     el.style.left = barsToPx(clip.position) + "px";
     el.style.width = barsToPx(clip.duration) + "px";
     el.dataset.uid = clip.uid;
@@ -1647,6 +1696,13 @@
     inspector.classList.toggle("fx-clip", clip.track === "fx");
     if (clip.track === "fx") renderFxCurveEditor(clip);
     stemPreviewHint.classList.toggle("show", clip.track === "stem");
+    // A stem swapped in from another song's section (see dropSectionAt)
+    // carries the same .songId/.songName/.label a real clip does --
+    // surfacing them here is the only place that detail is visible once
+    // the exploded view itself only shows the generic instrument name.
+    const song = clip.track === "stem" && clip.songId ? SONGS.find(s => s.id === clip.songId) : null;
+    stemSourceHint.classList.toggle("show", !!song);
+    if (song) stemSourceHint.textContent = `From "${clip.label}" — ${song.name} by ${song.artist}`;
     inspector.classList.add("show");
     // Only meaningful once the inspector (display:none until .show) is
     // actually laid out -- computing it any earlier, inside

@@ -119,27 +119,27 @@
         <div class="stem-rows" id="stemRows">
           <div class="row row-stem" id="stemRowDrums">
             <div class="row-label stem"><span>Drums</span></div>
-            <div class="row-lane stem" id="stemLaneDrums" data-stem-key="drums"></div>
+            <div class="row-lane stem" id="stemLaneDrums" data-track="stem" data-stem-key="drums"></div>
           </div>
           <div class="row row-stem" id="stemRowBass">
             <div class="row-label stem"><span>Bass</span></div>
-            <div class="row-lane stem" id="stemLaneBass" data-stem-key="bass"></div>
+            <div class="row-lane stem" id="stemLaneBass" data-track="stem" data-stem-key="bass"></div>
           </div>
           <div class="row row-stem" id="stemRowGuitar">
             <div class="row-label stem"><span>Guitar</span></div>
-            <div class="row-lane stem" id="stemLaneGuitar" data-stem-key="guitar"></div>
+            <div class="row-lane stem" id="stemLaneGuitar" data-track="stem" data-stem-key="guitar"></div>
           </div>
           <div class="row row-stem" id="stemRowKeys">
             <div class="row-label stem"><span>Keys</span></div>
-            <div class="row-lane stem" id="stemLaneKeys" data-stem-key="keys"></div>
+            <div class="row-lane stem" id="stemLaneKeys" data-track="stem" data-stem-key="keys"></div>
           </div>
           <div class="row row-stem" id="stemRowSynths">
             <div class="row-label stem"><span>Synths</span></div>
-            <div class="row-lane stem" id="stemLaneSynths" data-stem-key="synths"></div>
+            <div class="row-lane stem" id="stemLaneSynths" data-track="stem" data-stem-key="synths"></div>
           </div>
           <div class="row row-stem" id="stemRowOther">
             <div class="row-label stem"><span>Other</span></div>
-            <div class="row-lane stem" id="stemLaneOther" data-stem-key="other"></div>
+            <div class="row-lane stem" id="stemLaneOther" data-track="stem" data-stem-key="other"></div>
           </div>
         </div>
         <div class="row row-secondary" id="beatsRow2">
@@ -203,6 +203,7 @@
       </button>
     </div>
     <p class="hint stem-preview-hint" id="stemPreviewHint">Preview only — stems aren't part of the mix yet.</p>
+    <p class="hint stem-source-hint" id="stemSourceHint"></p>
     <div class="vol-row">
       <svg class="vol-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
       <input type="range" id="volSlider" min="0" max="100" value="100" />

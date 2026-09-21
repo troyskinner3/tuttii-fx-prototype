@@ -643,6 +643,38 @@ undoing a stem delete correctly un-tombstones it too. Entries are pruned
 once their source clip no longer exists, so the list doesn't grow
 unbounded over a long session.
 
+**Dragging a library section directly onto an exploded stem row** swaps
+that one instrument's content in from a different song's section — "put
+this song's guitar in that section" — reusing the same drag machinery
+every other lane already has: the six stem rows are added to
+`validLanesFor()` (only reachable while their lane is actually exploded,
+same as every other conditionally-visible lane here — hidden ones are
+`display:none`, so `elementFromPoint` can never return them regardless
+of being listed). `dropSectionAt`'s new `"stem"` branch finds whatever's
+currently in that exact row overlapping the drop point, tombstones it if
+it was an auto-mirror (or it'd just be regenerated on the next sync,
+same bug as above), and removes it. If exactly one clip was displaced,
+the new one inherits its position/duration — the swap reads as
+"replace what's here," not a resize to the dropped section's own
+original length; anything messier (empty space, or an already-overlapping
+mess) falls back to a plain cursor-centered drop like every other
+freeform lane. The new clip is `.manuallyAdjusted` (a deliberate swap-in,
+not a mirror the section still drives) and keeps `.songId`/`.songName`/
+`.label` exactly like a real clip does — nothing new needed there, since
+`dropSectionAt` already sets all three before branching on `type`.
+
+`.songId` being set at all is what distinguishes a replaced stem — an
+auto-mirror or a plain resized one never has one — so it's the one check
+both the yellow `.replaced` marker (`buildClipEl`, same border-color +
+inset-ring treatment as `.stem-edited`, for the same reason: an outline
+would bleed into a tightly-packed neighbor) and the inspector's
+`#stemSourceHint` line (`From "<section>" — <song> by <artist>`, looked
+up via `SONGS.find`) key off. The in-row clip box itself keeps showing
+the generic instrument name (`STEM_LABELS[clip.stemKey]`, same as every
+other stem) rather than the swapped-in song's name — the yellow border
+is the at-a-glance signal; the actual song/artist detail is deliberately
+one tap away in the inspector instead of cluttering the row.
+
 **Moving the section a bled/grown stem belongs to** preserves the edit
 rather than resetting it or leaving the stem stranded at its old
 absolute position: `.sourcePosAtSync` records each stem's source clip's

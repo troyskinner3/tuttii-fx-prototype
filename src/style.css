@@ -1112,6 +1112,18 @@
 
   .stem-preview-hint { display: none; color: var(--violet); }
   .stem-preview-hint.show { display: block; }
+  .stem-source-hint { display: none; color: var(--warn-yellow); }
+  .stem-source-hint.show { display: block; }
+
+  /* A stem swapped in from a different song's section (drag a library
+     section directly onto an exploded stem row) rather than auto-mirrored
+     or just resized -- same yellow-warning language as .stem-edited on
+     the real clip, border-color + inset ring so it stays contained
+     within the clip's own size instead of an outline bleeding into a
+     tightly-packed neighbor. */
+  .clip.stem.replaced { border-color: var(--warn-yellow); box-shadow: inset 0 0 0 2px var(--warn-yellow); }
+
+  .drag-ghost.stem { background: rgba(160,85,213,0.85); border: 1px solid var(--violet); }
 
   /* A real Beats/Beats2 clip whose exploded stems have been hand-edited --
      the clip's actual audio hasn't changed (stems are UI-only), so this is
