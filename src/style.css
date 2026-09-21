@@ -1116,6 +1116,11 @@
   /* A real Beats/Beats2 clip whose exploded stems have been hand-edited --
      the clip's actual audio hasn't changed (stems are UI-only), so this is
      a warning that what's shown in the breakdown no longer matches what
-     plays. outline (not border/box-shadow) so it layers cleanly over
-     .selected's own border-color/box-shadow instead of fighting it. */
-  .clip.stem-edited { outline: 2px solid var(--warn-yellow); outline-offset: 1px; }
+     plays. Replaces the border color and adds an *inset* ring rather than
+     an outline -- an outline sits outside the box and visibly collided
+     with a flush-packed neighbor sitting right against it; inset stays
+     entirely within the clip's own existing size. The extra .beats here
+     matches .clip.selected.beats's specificity so this wins over it when
+     a clip is both selected and edited -- the warning is the more
+     important thing to see in that case. */
+  .clip.beats.stem-edited { border-color: var(--warn-yellow); box-shadow: inset 0 0 0 2px var(--warn-yellow); }
