@@ -115,6 +115,40 @@
     neighbor.layer = tmp;
   }
 
+  // ---------- Freeform single-slot lanes (secondary Vocal/Beats, stems) ----------
+  // Three positioning models now coexist: flush-packed (vocal/beats,
+  // layout()), freely-positioned-and-stacked (fx, up to MAX_FX_LAYERS deep,
+  // above), and freely-positioned-but-single-slot -- this section -- for
+  // anything where overlap should just be rejected outright rather than
+  // stacked: the secondary Vocal/Beats lane (only one clip at a time, no
+  // layering) and each exploded stem sub-lane (same rule, scoped to its
+  // own stemKey+stemLane). All three still share fxTimeOverlap.
+  function isFreeformTrack(track) {
+    return track === "fx" || track === "vocal2" || track === "beats2" || track === "stem";
+  }
+  function singleSlotExceedsCap(list, candidate, excludeUid) {
+    return list.some(c => c.uid !== excludeUid && fxTimeOverlap(candidate, c));
+  }
+  function stemListFor(stemKey, stemLane) {
+    return clips.stem.filter(c => c.stemKey === stemKey && c.stemLane === stemLane);
+  }
+  // The comparison group a given freeform-single clip's overlap is judged
+  // against -- the whole secondary-lane array for vocal2/beats2 (there's
+  // only ever one lane's worth), or just this one stem sub-lane's own
+  // clips for a stem preview (each of the six is its own independent slot).
+  function freeformListFor(clip) {
+    if (clip.track === "stem") return stemListFor(clip.stemKey, clip.stemLane);
+    return clips[clip.track];
+  }
+  // vocal2/beats2's and stem's equivalent of moveFxClip -- horizontal-only
+  // (no vertical restack; a single-slot lane has nothing to restack
+  // against), silently reverting if the target spot is already occupied.
+  function moveFreeformClip(clip, desiredLeftBars) {
+    const snapped = snap(desiredLeftBars, 1);
+    if (singleSlotExceedsCap(freeformListFor(clip), { position: snapped, duration: clip.duration }, clip.uid)) return;
+    clip.position = snapped;
+  }
+
   // ---------- Song / section data ----------
   // Sections are stem-agnostic, matching the real app: a section carries a vocal root
   // pitch (for when it's dropped as a vocal) and works generically as a beat pattern
@@ -234,9 +268,30 @@
   // fx clips carry no songName/root -- just {effectId}, and automate the
   // shared master filter (see FX_EFFECTS + scheduleFxClip) instead of
   // producing their own sound.
-  let clips = { vocal: [], beats: [], fx: [] };
+  //
+  // vocal2/beats2 are the secondary lanes' own arrays -- real audio,
+  // freely positioned (like fx) rather than flush-packed, capped at one
+  // clip at a time (no stacking). Every vocal/vocal2/beats/beats2 clip
+  // also carries .audioTrack ("vocal" or "beats"), the literal stem
+  // identity used for buffer lookups/synthesis/coloring -- kept separate
+  // from .track (which is really "which array/lane is this in") so a
+  // vocal2 clip still finds the real "vocal" matched buffer.
+  //
+  // stem holds every exploded-view placeholder clip across both possible
+  // exploded lanes (stemLane: 0 or 1, whichever Beats lane was exploded)
+  // and all six stemKeys at once, undifferentiated by any array split --
+  // it's UI-only (see explodedLane below), never scheduled for audio.
+  let clips = { vocal: [], beats: [], vocal2: [], beats2: [], fx: [], stem: [] };
   let uidCounter = 1;
   let selectedUid = null;
+  // Accordion state for the secondary lanes -- view-only, not part of
+  // undo/redo (like which library tab is open).
+  let vocalExpanded = false;
+  let beatsExpanded = false;
+  // Which Beats lane (0 = primary, 1 = secondary) is currently exploded
+  // into its six stem sub-lanes, or null if neither is. Only one at a
+  // time, per the "so it doesn't get overwhelming" call.
+  let explodedLane = null;
 
   // ---------- FX ----------
   // One row per effect type in the library (tap-to-expand, same pattern as
@@ -372,6 +427,24 @@
   const vocalEmpty = document.getElementById("vocalEmpty");
   const beatsEmpty = document.getElementById("beatsEmpty");
   const fxEmpty = document.getElementById("fxEmpty");
+  // Secondary Vocal/Beats lanes (accordion) + exploded stem breakdown --
+  // see the "Secondary lanes + exploded stems" README section.
+  const vocalRow2 = document.getElementById("vocalRow2");
+  const vocalLane2 = document.getElementById("vocalLane2");
+  const vocal2Empty = document.getElementById("vocal2Empty");
+  const vocalExpandBtn = document.getElementById("vocalExpandBtn");
+  const beatsRow2 = document.getElementById("beatsRow2");
+  const beatsLane2 = document.getElementById("beatsLane2");
+  const beats2Empty = document.getElementById("beats2Empty");
+  const beatsExpandBtn = document.getElementById("beatsExpandBtn");
+  const beatsExplodeBtn = document.getElementById("beatsExplodeBtn");
+  const beats2ExplodeBtn = document.getElementById("beats2ExplodeBtn");
+  const stemRows = document.getElementById("stemRows");
+  const STEM_KEYS = ["drums", "bass", "guitar", "keys", "synths", "other"];
+  const STEM_LABELS = { drums: "Drums", bass: "Bass", guitar: "Guitar", keys: "Keys", synths: "Synths", other: "Other" };
+  const stemLaneEls = {};
+  STEM_KEYS.forEach(k => { stemLaneEls[k] = document.getElementById("stemLane" + k[0].toUpperCase() + k.slice(1)); });
+  const stemPreviewHint = document.getElementById("stemPreviewHint");
   const scrubLane = document.getElementById("scrubLane");
   const playhead = document.getElementById("playhead");
   const timeCur = document.getElementById("timeCur");
@@ -441,18 +514,17 @@
   // BAR_PX, so this whole thing is torn down and rebuilt on zoom (pinch),
   // not just built once -- these are static inline styles computed at
   // build time, not recalculated per-render like clips/playhead are.
+  const barLineLanes = [vocalLane, beatsLane, fxLane, vocalLane2, beatsLane2, ...STEM_KEYS.map(k => stemLaneEls[k])];
   function buildTimelineGrid() {
-    vocalLane.querySelectorAll(".bar-line").forEach(el => el.remove());
-    beatsLane.querySelectorAll(".bar-line").forEach(el => el.remove());
-    fxLane.querySelectorAll(".bar-line").forEach(el => el.remove());
+    barLineLanes.forEach(lane => lane.querySelectorAll(".bar-line").forEach(el => el.remove()));
     scrubLane.querySelectorAll(".scrub-tick").forEach(el => el.remove());
 
     const contentWidth = barsToPx(TOTAL_BARS);
     scrollInner.style.width = (LABEL_W + contentWidth) + "px";
-    [vocalLane, beatsLane, fxLane, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
+    [...barLineLanes, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
 
     for (let b = 0; b < TOTAL_BARS; b++) {
-      [vocalLane, beatsLane, fxLane].forEach(lane => {
+      barLineLanes.forEach(lane => {
         const gl = document.createElement("div");
         gl.className = "bar-line" + (b % 4 === 0 ? " major" : "");
         gl.style.left = barsToPx(b) + "px";
@@ -811,14 +883,16 @@
     }
 
     // FX chips only drop into the FX lane; everything else (songs/silence)
-    // only drops into Vocal/Beats -- keeps a filter sweep from landing in
-    // an audio lane or vice versa.
+    // only drops into Vocal/Beats, including their secondary lanes when
+    // expanded (hidden ones are simply unreachable by elementFromPoint,
+    // so listing them here even while collapsed is harmless) -- keeps a
+    // filter sweep from landing in an audio lane or vice versa.
     function validLanesFor() {
-      return sec.isFx ? [fxLane] : [vocalLane, beatsLane];
+      return sec.isFx ? [fxLane] : [vocalLane, beatsLane, vocalLane2, beatsLane2];
     }
 
     function updateHighlight(x, y) {
-      [vocalLane, beatsLane, fxLane].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
+      [vocalLane, beatsLane, fxLane, vocalLane2, beatsLane2].forEach(l => l.classList.remove("drop-valid", "drop-invalid"));
       const el = document.elementFromPoint(x, y);
       const laneEl = el && el.closest(".row-lane");
       const valid = laneEl && validLanesFor().includes(laneEl);
@@ -832,12 +906,21 @@
         const tooDeep = fxExceedsMaxLayers({ position: snappedPos, duration: sec.durBars }, null);
         laneEl.classList.add(tooDeep ? "drop-invalid" : "drop-valid");
         if (tooDeep) type = null; // ghost stays neutral, not a false "fx" promise
+      } else if (valid && (laneEl === vocalLane2 || laneEl === beatsLane2)) {
+        // Same live feedback for the secondary lane's single slot -- it has
+        // no flush-packing fallback either, just an outright reject.
+        const rect = laneEl.getBoundingClientRect();
+        const cursorBars = pxToBars(x - rect.left);
+        const snappedPos = snap(cursorBars - sec.durBars / 2, 1);
+        const occupied = singleSlotExceedsCap(clips[type], { position: snappedPos, duration: sec.durBars }, null);
+        laneEl.classList.add(occupied ? "drop-invalid" : "drop-valid");
+        if (occupied) type = null;
       } else if (type) {
         laneEl.classList.add("drop-valid");
       }
       if (type !== hoverType) {
         hoverType = type;
-        ghost.classList.remove("vocal", "beats", "fx", "neutral");
+        ghost.classList.remove("vocal", "beats", "vocal2", "beats2", "fx", "neutral");
         ghost.classList.add(hoverType || "neutral");
       }
     }
@@ -920,6 +1003,14 @@
       isSilence: !!sec.isSilence,
     };
     if (sec.isFx) clip.effectId = sec.effectId;
+    // The secondary lanes are their own arrays (freeform, not flush-packed
+    // -- see isFreeformTrack), but the audio underneath is still ordinary
+    // vocal/beats content, not a distinct stem type. .audioTrack is the
+    // one field every buffer lookup/synthesis/coloring call actually reads
+    // -- .track itself is "which array/lane," not "which real stem."
+    if (type === "vocal2") clip.audioTrack = "vocal";
+    else if (type === "beats2") clip.audioTrack = "beats";
+    else if (type === "vocal" || type === "beats") clip.audioTrack = type;
     // Real sections carry no synthesized pitch/pattern -- instead they point
     // at an offset range into the song's pre-rendered "matched" stem buffer
     // (already time/pitch-matched to the locked project BPM/key), which is
@@ -952,6 +1043,14 @@
       clip.position = snappedPos;
       clip.layer = allocateTopFxLayer();
       clips.fx.push(clip);
+    } else if (type === "vocal2" || type === "beats2") {
+      // Same freeform placement as FX, but capped at one clip at a time --
+      // no layering in the secondary lane, so a second overlapping drop is
+      // just rejected rather than stacked.
+      const snappedPos = snap(cursorBars - clip.duration / 2, 1);
+      if (singleSlotExceedsCap(clips[type], { position: snappedPos, duration: clip.duration }, null)) return;
+      clip.position = snappedPos;
+      clips[type].push(clip);
     } else {
       const arr = clips[type];
       let insertIdx = arr.length; // default: append at the end
@@ -1004,12 +1103,20 @@
     vocalLane.querySelectorAll(".clip").forEach(el => el.remove());
     beatsLane.querySelectorAll(".clip").forEach(el => el.remove());
     fxLane.querySelectorAll(".clip").forEach(el => el.remove());
+    vocalLane2.querySelectorAll(".clip").forEach(el => el.remove());
+    beatsLane2.querySelectorAll(".clip").forEach(el => el.remove());
+    STEM_KEYS.forEach(k => stemLaneEls[k].querySelectorAll(".clip").forEach(el => el.remove()));
+
     vocalEmpty.style.display = clips.vocal.length ? "none" : "flex";
     beatsEmpty.style.display = clips.beats.length ? "none" : "flex";
     fxEmpty.style.display = clips.fx.length ? "none" : "flex";
+    vocal2Empty.style.display = clips.vocal2.length ? "none" : "flex";
+    beats2Empty.style.display = clips.beats2.length ? "none" : "flex";
 
     clips.vocal.forEach(c => vocalLane.appendChild(buildClipEl(c)));
     clips.beats.forEach(c => beatsLane.appendChild(buildClipEl(c)));
+    clips.vocal2.forEach(c => vocalLane2.appendChild(buildClipEl(c)));
+    clips.beats2.forEach(c => beatsLane2.appendChild(buildClipEl(c)));
 
     // FX row grows to fit however deep the stack currently gets -- only
     // where clips actually overlap in time, not just because many exist
@@ -1020,7 +1127,34 @@
     fxLane.style.height = fxRowPx + "px";
     clips.fx.forEach(c => fxLane.appendChild(buildClipEl(c)));
 
-    const anyClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.fx.length > 0;
+    // ---------- Secondary lane accordions ----------
+    vocalRow2.classList.toggle("show", vocalExpanded);
+    vocalExpandBtn.classList.toggle("expanded", vocalExpanded);
+    beatsRow2.classList.toggle("show", beatsExpanded);
+    beatsExpandBtn.classList.toggle("expanded", beatsExpanded);
+
+    // ---------- Exploded stem view (UI-only, see README) ----------
+    // Whichever Beats lane is exploded (if either) empties its own
+    // row-lane out -- the same content now shows one instrument per row
+    // below it instead -- and the six stem rows physically relocate to
+    // sit right after that lane, since only one can be exploded at a time
+    // and there's one shared set of six rows, not two.
+    beatsLane.classList.toggle("exploded-source", explodedLane === 0);
+    beatsExplodeBtn.classList.toggle("active", explodedLane === 0);
+    beatsLane2.classList.toggle("exploded-source", explodedLane === 1);
+    beats2ExplodeBtn.classList.toggle("active", explodedLane === 1);
+    stemRows.classList.toggle("show", explodedLane !== null);
+    const stemAnchor = explodedLane === 0 ? beatsRow.nextElementSibling
+      : explodedLane === 1 ? beatsRow2.nextElementSibling
+      : null;
+    if (stemAnchor && stemAnchor !== stemRows) scrollInner.insertBefore(stemRows, stemAnchor);
+    STEM_KEYS.forEach(k => {
+      clips.stem.filter(c => c.stemKey === k && c.stemLane === explodedLane)
+        .forEach(c => stemLaneEls[k].appendChild(buildClipEl(c)));
+    });
+
+    const anyClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.fx.length > 0
+      || clips.vocal2.length > 0 || clips.beats2.length > 0;
     exportWavBtn.disabled = !anyClips;
     exportMp3Btn.disabled = !anyClips;
     timeTotal.textContent = formatTime(barsToSeconds(timelineEndBars()));
@@ -1028,7 +1162,8 @@
 
   function buildClipEl(clip) {
     const el = document.createElement("div");
-    el.className = "clip " + clip.track + (clip.isSilence ? " silence" : "") + (clip.uid === selectedUid ? " selected" : "");
+    const cssTrack = clip.audioTrack || clip.track; // vocal2/beats2 look like their real stem; stem keeps its own "stem" class
+    el.className = "clip " + cssTrack + (clip.isSilence ? " silence" : "") + (clip.uid === selectedUid ? " selected" : "");
     el.style.left = barsToPx(clip.position) + "px";
     el.style.width = barsToPx(clip.duration) + "px";
     el.dataset.uid = clip.uid;
@@ -1047,12 +1182,15 @@
       bodyHtml = `<div class="clip-name">Silence</div><div class="clip-sub">${clip.duration} bar${clip.duration > 1 ? "s" : ""}</div>`;
     } else if (clip.track === "fx") {
       bodyHtml = `<div class="clip-name fx-clip-name">${clip.label}</div>`;
+    } else if (clip.track === "stem") {
+      // Placeholder only -- no real audio backs this, so no waveform to draw.
+      bodyHtml = `<div class="clip-name">${STEM_LABELS[clip.stemKey]}</div>`;
     } else {
       const widthPx = barsToPx(clip.duration);
       const barsCount = Math.max(5, Math.round(widthPx / 7));
       let waveHtml = '<div class="clip-wave">';
       const song = clip.songId ? SONGS.find(s => s.id === clip.songId) : null;
-      const buf = song && song._matched.buffers ? song._matched.buffers[clip.track] : null;
+      const buf = song && song._matched.buffers ? song._matched.buffers[clip.audioTrack] : null;
       if (buf) {
         const endSec = Math.min(buf.duration, clip.sourceStart + clip.duration * BAR_SECONDS);
         computeWaveformBars(buf, clip.sourceStart, endSec, barsCount).forEach(peak => {
@@ -1188,6 +1326,12 @@
           }
           renderClips();
           selectClip(clip.uid);
+        } else if (isFreeformTrack(clip.track)) {
+          // Secondary lane / stem preview: freeform like FX, but single-slot
+          // -- no vertical restack to check for, just the horizontal commit.
+          moveFreeformClip(clip, clip.position + liveDx);
+          renderClips();
+          selectClip(clip.uid);
         } else {
           reorderClip(clip, startCenterBars + liveDx);
         }
@@ -1265,7 +1409,7 @@
     // past the buffer's actual start/end, so figure out how many bars of
     // headroom exist on whichever side is being dragged.
     const song = clip.songId ? SONGS.find(s => s.id === clip.songId) : null;
-    const buf = song && song._matched.buffers ? song._matched.buffers[clip.track] : null;
+    const buf = song && song._matched.buffers ? song._matched.buffers[clip.audioTrack] : null;
     let maxDurBars = Infinity;
     if (buf) {
       maxDurBars = side === "right"
@@ -1294,6 +1438,19 @@
         }
         return MIN_DUR_BARS;
       }
+      if (isFreeformTrack(clip.track)) {
+        // Same shrink-until-valid walk as FX, but against the single-slot
+        // cap -- and still bounded by maxDurBars for vocal2/beats2 (real
+        // buffer-backed audio, unlike a stem preview or FX).
+        const list = freeformListFor(clip);
+        for (let d = Math.min(raw, maxDurBars); d > MIN_DUR_BARS; d--) {
+          const candidate = side === "right"
+            ? { position: clip.position, duration: d }
+            : { position: (clip.position + startDur) - d, duration: d };
+          if (candidate.position >= 0 && !singleSlotExceedsCap(list, candidate, clip.uid)) return d;
+        }
+        return MIN_DUR_BARS;
+      }
       return Math.min(raw, maxDurBars);
     }
 
@@ -1306,12 +1463,13 @@
       // layout() reconciles position afterward. That's tied to which part
       // of the real source stem gets revealed, not just where the clip
       // sits on the timeline, so it's left as-is here.
-      // FX clips have no source buffer semantics, so there's nothing to
-      // preserve by waiting -- live-track the left edge too, so whichever
-      // handle you're dragging is the one that visibly moves and the other
-      // stays anchored throughout, instead of only snapping into place
-      // on release.
-      if (clip.track === "fx" && side === "left") {
+      // FX and stem-preview clips have no source buffer semantics, so
+      // there's nothing to preserve by waiting -- live-track the left edge
+      // too, so whichever handle you're dragging is the one that visibly
+      // moves and the other stays anchored throughout, instead of only
+      // snapping into place on release. vocal2/beats2 are freeform too but
+      // ARE buffer-backed, so they keep the wait-for-release behavior below.
+      if ((clip.track === "fx" || clip.track === "stem") && side === "left") {
         el.style.left = barsToPx((clip.position + startDur) - newDur) + "px";
       }
     }
@@ -1335,10 +1493,11 @@
         if (side === "right") clip.sourceEnd = clip.sourceStart + clip.duration * BAR_SECONDS;
         else clip.sourceStart = clip.sourceEnd - clip.duration * BAR_SECONDS;
       }
-      if (type === "fx") {
-        // No layout() reflow for FX -- instead, a left-handle trim moves
-        // position itself (grow left = duration up, right edge fixed);
-        // a right-handle trim already left position untouched above.
+      if (isFreeformTrack(type)) {
+        // No layout() reflow for freeform tracks (fx, vocal2/beats2, stem)
+        // -- instead, a left-handle trim moves position itself (grow left
+        // = duration up, right edge fixed); a right-handle trim already
+        // left position untouched above.
         if (side === "left") clip.position = Math.max(0, (clip.position + startDur) - newDuration);
       } else {
         // Vocal/Beats: this clip's position is untouched, and layout()
@@ -1369,7 +1528,9 @@
 
   // ---------- Selection / inspector ----------
   function findClip(uid) {
-    return clips.vocal.find(c => c.uid === uid) || clips.beats.find(c => c.uid === uid) || clips.fx.find(c => c.uid === uid);
+    return clips.vocal.find(c => c.uid === uid) || clips.beats.find(c => c.uid === uid)
+      || clips.vocal2.find(c => c.uid === uid) || clips.beats2.find(c => c.uid === uid)
+      || clips.fx.find(c => c.uid === uid) || clips.stem.find(c => c.uid === uid);
   }
 
   function selectClip(uid) {
@@ -1394,6 +1555,7 @@
     updateVolSliderFill();
     inspector.classList.toggle("fx-clip", clip.track === "fx");
     if (clip.track === "fx") renderFxCurveEditor(clip);
+    stemPreviewHint.classList.toggle("show", clip.track === "stem");
     inspector.classList.add("show");
     // Only meaningful once the inspector (display:none until .show) is
     // actually laid out -- computing it any earlier, inside
@@ -2058,6 +2220,13 @@
       clone.position = pos;
       clone.layer = allocateTopFxLayer();
       arr.push(clone);
+    } else if (isFreeformTrack(type)) {
+      // Same idea as FX, but against the single-slot cap instead.
+      let pos = original.position + original.duration;
+      const list = freeformListFor(clone);
+      while (singleSlotExceedsCap(list, { position: pos, duration: clone.duration }, clone.uid) && pos < TOTAL_BARS) pos++;
+      clone.position = pos;
+      arr.push(clone);
     } else {
       arr.splice(idx + 1, 0, clone);
       layout(type);
@@ -2072,15 +2241,64 @@
     if (selectedUid == null) return;
     const original = findClip(selectedUid);
     const type = original ? original.track : null;
-    ["vocal", "beats", "fx"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
-    // FX clips are freely positioned -- deleting one shouldn't drag its
-    // remaining siblings' positions along with it, so skip the reflow there.
-    if (type && type !== "fx") layout(type); // close the gap left behind, keep the track flush
+    ["vocal", "beats", "vocal2", "beats2", "fx", "stem"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
+    // Freeform tracks (fx, vocal2/beats2, stem) are freely positioned --
+    // deleting one shouldn't drag its remaining siblings' positions along
+    // with it, so skip the reflow there.
+    if (type && !isFreeformTrack(type)) layout(type); // close the gap left behind, keep the track flush
     selectedUid = null;
     inspector.classList.remove("show");
     renderClips();
     commitHistory();
   });
+
+  // ---------- Secondary lane accordions ----------
+  // View-only toggles -- not part of undo/redo, same as which library tab
+  // is open. Collapsing doesn't delete whatever's in the secondary lane;
+  // it's just out of sight until reopened.
+  vocalExpandBtn.addEventListener("click", () => {
+    vocalExpanded = !vocalExpanded;
+    renderClips();
+  });
+  beatsExpandBtn.addEventListener("click", () => {
+    beatsExpanded = !beatsExpanded;
+    renderClips();
+  });
+
+  // ---------- Exploded stem view (UI-only prototype) ----------
+  // Generates one placeholder clip per (existing real clip in that Beats
+  // lane) x (each of the six stems), mirroring position/duration exactly
+  // -- but only the first time that lane is exploded; re-exploding it
+  // later shows whatever state those placeholders were left in, same as
+  // any other clip. Deliberately not wired into buildFxUnit/scheduleClip
+  // anywhere -- clips.stem is never read by the audio engine, so nothing
+  // here can affect actual playback or export, per the "view-only" scope
+  // this was explicitly asked to stay within.
+  function ensureStemClipsFor(lane) {
+    if (clips.stem.some(c => c.stemLane === lane)) return;
+    const sourceClips = clips[lane === 0 ? "beats" : "beats2"];
+    STEM_KEYS.forEach(stemKey => {
+      sourceClips.forEach(src => {
+        clips.stem.push({
+          uid: uidCounter++,
+          track: "stem",
+          stemKey,
+          stemLane: lane,
+          label: STEM_LABELS[stemKey],
+          position: src.position,
+          duration: src.duration,
+          volume: 1,
+        });
+      });
+    });
+  }
+  function setExplodedLane(lane) {
+    explodedLane = (explodedLane === lane) ? null : lane;
+    if (explodedLane !== null) ensureStemClipsFor(explodedLane);
+    renderClips();
+  }
+  beatsExplodeBtn.addEventListener("click", () => setExplodedLane(0));
+  beats2ExplodeBtn.addEventListener("click", () => setExplodedLane(1));
 
   volSlider.addEventListener("input", () => {
     const clip = findClip(selectedUid);
@@ -2140,7 +2358,13 @@
 
     clips.vocal = [];
     clips.beats = [];
+    clips.vocal2 = [];
+    clips.beats2 = [];
     clips.fx = [];
+    clips.stem = [];
+    vocalExpanded = false;
+    beatsExpanded = false;
+    explodedLane = null;
 
     renderClips();
     updatePlayheadEl();
@@ -2706,7 +2930,7 @@
   function scheduleClip(ctx, dest, clip, at, dur, offsetIntoClipSec) {
     if (clip.isSilence) return; // occupies time in the sequence, produces no sound
     if (clip.songId) { scheduleRealClip(ctx, dest, clip, at, dur, offsetIntoClipSec || 0); return; }
-    if (clip.track === "vocal") scheduleVocal(ctx, dest, clip, at, dur);
+    if (clip.audioTrack === "vocal") scheduleVocal(ctx, dest, clip, at, dur);
     else scheduleBeats(ctx, dest, clip, at, dur);
   }
 
@@ -2717,7 +2941,7 @@
   // starts partway through the clip (e.g. the playhead was scrubbed into it).
   function scheduleRealClip(ctx, dest, clip, at, dur, offsetIntoClipSec) {
     const song = SONGS.find(s => s.id === clip.songId);
-    const buf = song && song._matched.buffers ? song._matched.buffers[clip.track] : null;
+    const buf = song && song._matched.buffers ? song._matched.buffers[clip.audioTrack] : null;
     if (!buf) return; // matched audio hasn't finished loading yet -- silent until it does
     const srcOffset = clip.sourceStart + offsetIntoClipSec;
     const playDur = Math.max(0, Math.min(dur, buf.duration - srcOffset));
@@ -2933,6 +3157,8 @@
     return Math.max(0.01,
       ...clips.vocal.map(c => c.position + c.duration),
       ...clips.beats.map(c => c.position + c.duration),
+      ...clips.vocal2.map(c => c.position + c.duration),
+      ...clips.beats2.map(c => c.position + c.duration),
       ...clips.fx.map(c => c.position + c.duration));
   }
 
@@ -2959,7 +3185,7 @@
 
   async function play() {
     if (playStarting) return;
-    const hasClips = clips.vocal.length > 0 || clips.beats.length > 0;
+    const hasClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.vocal2.length > 0 || clips.beats2.length > 0;
     if (hasClips) {
       trackFirstInteraction();
       pushAnalyticsEvent("demo_play_pressed");
@@ -2975,7 +3201,7 @@
     // hitting Play), this is a real network fetch + decode, not something
     // any amount of local optimization shortens -- so the button shows a
     // spinner for it rather than just sitting there looking unresponsive.
-    const songIds = new Set([...clips.vocal, ...clips.beats, ...clips.fx].map(c => c.songId).filter(Boolean));
+    const songIds = new Set([...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2, ...clips.fx].map(c => c.songId).filter(Boolean));
     const alreadyLoaded = [...songIds].every(id => {
       const song = SONGS.find(s => s.id === id);
       return song && song._matched.state === "ready";
@@ -3010,7 +3236,7 @@
     const fxChain = buildFxChain(ctx);
     const mixDest = fxChain.length ? fxChain[0].input : ctx.destination;
 
-    [...clips.vocal, ...clips.beats].forEach(clip => {
+    [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
       if (clipEndBar <= playheadBar) return;
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
@@ -3089,7 +3315,7 @@
     const fxChain = buildFxChain(offline);
     const mixDest = fxChain.length ? fxChain[0].input : offline.destination;
 
-    [...clips.vocal, ...clips.beats].forEach(clip => {
+    [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
       scheduleClip(offline, mixDest, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
     });
     fxChain.forEach(({ clip, automate }) => {

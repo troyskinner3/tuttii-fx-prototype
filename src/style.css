@@ -995,8 +995,8 @@
     opacity: 0.92;
     height: 60px;
   }
-  .drag-ghost.vocal { background: rgba(79,209,232,0.85); border: 1px solid var(--cyan); }
-  .drag-ghost.beats { background: rgba(232,75,198,0.85); border: 1px solid var(--pink); }
+  .drag-ghost.vocal, .drag-ghost.vocal2 { background: rgba(79,209,232,0.85); border: 1px solid var(--cyan); }
+  .drag-ghost.beats, .drag-ghost.beats2 { background: rgba(232,75,198,0.85); border: 1px solid var(--pink); }
   .drag-ghost.fx { background: rgba(240,169,62,0.9); border: 1px solid var(--amber); }
   .drag-ghost.neutral { background: rgba(160,85,213,0.85); border: 1px solid var(--violet); }
   .drag-ghost .clip-name { color: var(--ink); font-size: 11.5px; font-weight: 700; }
@@ -1034,3 +1034,63 @@
     pointer-events: none;
     width: 260px;
   }
+
+  /* Secondary Vocal/Beats lanes + exploded stem view -- prototype-only
+     controls for pressure-testing the concept (see README). */
+  .row-label-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 1px;
+  }
+  .row-toggle-btn, .row-explode-btn {
+    background: none;
+    border: none;
+    padding: 2px;
+    color: var(--text-dim);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .row-toggle-btn svg, .row-explode-btn svg { width: 12px; height: 12px; }
+  .row-toggle-chevron { transition: transform 0.15s ease; }
+  .row-toggle-btn.expanded .row-toggle-chevron { transform: rotate(180deg); }
+  .row-toggle-btn.expanded, .row-explode-btn.active { color: var(--amber); }
+
+  /* A secondary lane starts collapsed -- hidden entirely (not just empty)
+     so it costs zero layout height until its accordion is opened. */
+  .row-secondary { display: none; }
+  .row-secondary.show { display: flex; }
+
+  /* The exploded stem breakdown replaces whichever Beats lane (primary or
+     secondary -- only one at a time) triggered it: that lane's own
+     row-lane empties out (clips.stem lives in its own separate array, see
+     main.js) while these six sit in its place. Each is deliberately
+     shorter than a normal 68px row -- a label chip, not a waveform --
+     both to read as a lighter-weight "preview" affordance and to keep the
+     total timeline height from ballooning once this stacks on top of a
+     secondary lane too.
+  */
+  .stem-rows { display: none; }
+  .stem-rows.show { display: block; }
+  .row-stem { height: 36px; }
+  .row-label.stem {
+    font-size: 9.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .row-lane.exploded-source { display: none; }
+
+  .clip.stem {
+    background: rgba(160,85,213,0.14);
+    border: 1px dashed var(--violet);
+    justify-content: center;
+    padding: 0 7px;
+  }
+  .clip.stem .clip-name { color: var(--violet); font-size: 9.5px; line-height: 1; }
+  .clip.stem.selected { border-color: var(--violet); box-shadow: 0 0 0 2px rgba(160,85,213,0.35); }
+
+  .stem-preview-hint { display: none; color: var(--violet); }
+  .stem-preview-hint.show { display: block; }

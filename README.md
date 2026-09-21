@@ -469,6 +469,63 @@ partial resets (curve back to default, sliders left wherever they were)
 would leave a clip's actual sound out of sync with what "Reset" implies
 it did.
 
+### Secondary lanes + exploded stems
+
+Two more concept-pressure-test features, both scoped as "get the
+affordances and interaction model in front of Charley before he builds
+the real thing" rather than a finished feature. Nothing here has been
+tested against a real device yet — it's expected to change once it has.
+
+**Secondary Vocal/Beats lanes** are real, functional audio: each of
+Vocal and Beats gets an accordion toggle (the rotating chevron in its
+row-label, `vocalExpanded`/`beatsExpanded`) that reveals a second lane —
+`clips.vocal2`/`clips.beats2`, their own arrays — for layering a second
+section (a doubled harmony, an alternate take) over the primary one.
+The secondary lane is freeform-positioned like FX rather than
+flush-packed, but capped at exactly one clip at a time (no stacking) —
+`singleSlotExceedsCap` is FX's `fxExceedsMaxLayers` with the cap fixed
+at 1 instead of `MAX_FX_LAYERS`. `isFreeformTrack` now covers `"fx"`,
+`"vocal2"`, `"beats2"`, and `"stem"` (below) everywhere the code used to
+special-case `clip.track === "fx"` alone to mean "not flush-packed."
+
+Every vocal-family clip (`vocal` or `vocal2`) and beats-family clip
+(`beats` or `beats2`) also carries `.audioTrack` ("vocal" or "beats") —
+the literal stem identity used for buffer lookups, `scheduleVocal`/
+`scheduleBeats` dispatch, and CSS coloring. `.track` itself answers "which
+array/lane is this clip in," not "which real stem is it" — the split
+matters because `song._matched.buffers` only ever has two keys
+(`vocal`/`beats`), and a `vocal2` clip still needs to find the real
+`vocal` one. Both the live playback and offline export loops
+(`playScheduled`, `renderArrangement`) simply spread all four arrays
+together before scheduling — already-overlap-safe, since every clip
+there is scheduled independently off its own `.position`/`.duration`
+regardless of which array it came from, so a second lane playing
+simultaneously with the first needed zero audio-engine changes.
+
+**Exploded stems** are UI-only — a `row-explode-btn` on the Beats row
+(primary and secondary both have one, but only one lane can be exploded
+at a time, `explodedLane`: `0`, `1`, or `null`) swaps that lane's single
+row for six fixed sub-lanes (Drums/Bass/Guitar/Keys/Synths/Other,
+`STEM_KEYS`), each holding one placeholder clip per real clip currently
+in that Beats lane, generated once on first explode
+(`ensureStemClipsFor`) by mirroring position/duration exactly. They're
+fully interactive — move/trim/duplicate/delete all reuse the same
+generic clip machinery every other clip uses — but live in their own
+`clips.stem` array (one array for all six instruments and both possible
+exploded lanes at once, disambiguated by `.stemKey`/`.stemLane`) that
+the audio engine never reads: `clips.stem` never appears in either
+scheduling spread, so nothing here can affect actual playback or
+export, which is deliberately as far as this pass goes. The inspector
+shows a "Preview only" hint on a selected stem clip so that's not a
+surprise while poking at one.
+
+Screen space is the real open question here, flagged but intentionally
+not solved yet: Vocal + Vocal2 + Beats exploded into six rows + Beats2 +
+FX is a lot of simultaneous rows on a phone screen, and the honest
+answer right now is "the page just gets longer, scroll more" (see
+"Mobile embed scrolling" below) rather than anything smarter. Likely a
+first thing to revisit once this is actually being used.
+
 ### Mobile embed scrolling
 
 The Webflow embed (see the note at the top of this file) uses a bare
