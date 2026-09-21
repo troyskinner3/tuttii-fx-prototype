@@ -2382,34 +2382,38 @@
   // (reported: the instrumental section's length not matching the
   // exploded stems', and a newly-added section not appearing in the
   // breakdown at all). Each auto-generated stem clip remembers which real
-  // clip it mirrors via .sourceUid, and stays pinned to that clip's
-  // *current* position/duration -- except one the user has actually
-  // dragged/trimmed/duplicated themselves (.manuallyAdjusted), which is
-  // treated as the user's own creation from then on: exempt from being
-  // synced back into place, and from disappearing if its source is later
-  // deleted -- though it still moves *with* its source (preserving
-  // whatever the user did relative to it) rather than either freezing in
-  // place or resetting, tracked via .sourcePosAtSync. Deliberately not
-  // wired into buildFxUnit/scheduleClip anywhere -- clips.stem is never
-  // read by the audio engine, so nothing here can affect actual playback
-  // or export, per the "view-only" scope this was explicitly asked to
-  // stay within.
+  // clip it mirrors via .sourceUid, and its *position* stays pinned to
+  // that clip's current one (so it stays anchored to the right point in
+  // time if the section moves) -- but its duration, deliberately, is only
+  // ever set once, at the moment it's first generated. This was tried
+  // the other way (duration also re-pinned every sync) and explicitly
+  // reverted: this whole view is a mockup of independently-editable
+  // per-instrument stems, not literally tied to the one real underlying
+  // clip (clips.stem is never read by the audio engine -- nothing here
+  // can affect actual playback or export), so a stem re-matching
+  // whatever the real section's current size happens to be read as
+  // exactly the kind of silent, confusing resize this feature exists to
+  // let users *avoid* -- it should look and behave like it will on the
+  // real per-stem mobile app, where nothing else moves just because one
+  // instrument's own clip did. A stem the user has actually
+  // dragged/trimmed/duplicated themselves (.manuallyAdjusted) is exempt
+  // from all of this -- treated as the user's own creation from then on:
+  // never synced back into place, never removed just because its source
+  // is later deleted -- though it still moves *with* its source
+  // (preserving whatever the user did relative to it, e.g. how far it
+  // bleeds into the next section) rather than either freezing in place
+  // or resetting, tracked via .sourcePosAtSync.
   function syncStemClipsFor(lane) {
     const sourceType = lane === 0 ? "beats" : "beats2";
     const sourceClips = clips[sourceType];
     const flushPacked = lane === 0; // beats2 is freeform/single-slot, not flush-packed -- see the secondary-lane section above
 
-    // Snapshot each source's position/duration *before* this pass's own
-    // stem-driven growth (below) -- untouched stems pin to this snapshot,
-    // not the grown values, so extending one instrument doesn't silently
-    // stretch every other untouched stem in the same section along with
-    // it (reported: growing Drums was growing Bass/Guitar/Keys/Synths/
-    // Other too). A section resized or moved *directly* -- its own trim
-    // handle, a fresh drop, startClipMove -- already has its new values
-    // here by the time this runs, so untouched stems still correctly
-    // track that kind of change; this snapshot only excludes the
-    // incremental change this exact sync pass is about to make itself.
-    const beforeGrowth = new Map(sourceClips.map(c => [c.uid, { position: c.position, duration: c.duration }]));
+    // Each source's position *before* this pass's own stem-driven growth
+    // (below) -- an untouched stem's position still tracks this snapshot
+    // rather than the live value, so a sibling's left-growth can't drag
+    // it sideways either (see the position-only note further down for
+    // why duration isn't part of this anymore).
+    const beforeGrowth = new Map(sourceClips.map(c => [c.uid, c.position]));
 
     // An overhanging stem grows its source to cover it only when there's
     // genuinely nothing in the way on that side (the start/end of the
@@ -2449,14 +2453,21 @@
     clips.stem = clips.stem.filter(c =>
       c.stemLane !== lane || c.manuallyAdjusted || sourceByUid.has(c.sourceUid));
 
-    // A still-existing source clip moved/resized -- an untouched stem
-    // follows it, pinned to the pre-this-sync snapshot (see above) rather
-    // than the live value, so it tracks a real move/resize but not a
-    // sibling stem's own edit. A manually-adjusted one instead shifts by
-    // however far its source moved *since this stem's last sync*,
-    // preserving the user's own edit (e.g. how far it bleeds into the
-    // next section) rather than discarding it just because the section
-    // it's attached to got dragged somewhere else.
+    // A still-existing source clip moved -- an untouched stem's position
+    // follows it (pinned to the pre-this-sync snapshot above, so a
+    // sibling's own left-growth doesn't drag it sideways either), so it
+    // stays anchored to the right point in time. Its *duration*,
+    // deliberately, is never touched again after the stem is first
+    // generated -- once a stem exists it's meant to read as its own
+    // independently-sized thing, the way a real per-instrument stem
+    // actually would be, not a mirror that keeps silently resizing to
+    // match whatever the underlying single real clip happens to be doing
+    // (which it isn't literally tied to anyway -- clips.stem is never
+    // read by the audio engine; see the top of this section). A
+    // manually-adjusted stem instead shifts by however far its source
+    // moved *since this stem's last sync*, preserving the user's own
+    // edit (e.g. how far it bleeds into the next section) rather than
+    // discarding it just because the section it's attached to moved.
     clips.stem.forEach(c => {
       if (c.stemLane !== lane) return;
       const src = sourceByUid.get(c.sourceUid);
@@ -2465,9 +2476,7 @@
         const delta = src.position - (c.sourcePosAtSync ?? src.position);
         if (delta) c.position += delta;
       } else {
-        const snap = beforeGrowth.get(c.sourceUid) || src;
-        c.position = snap.position;
-        c.duration = snap.duration;
+        c.position = beforeGrowth.get(c.sourceUid) ?? src.position;
       }
       c.sourcePosAtSync = src.position;
     });

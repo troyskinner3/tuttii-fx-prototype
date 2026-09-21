@@ -574,17 +574,28 @@ reopening the breakdown to notice.
 
 Growing (or leaving as a bleed) is the *only* thing that changes as a
 result of one stem's edit — every other, untouched stem in that same
-section stays exactly its own size. Early on this wasn't true: growing
-Drums was silently growing Bass/Guitar/Keys/Synths/Other along with it,
-since the sibling-pinning step read the source's *already-grown*
-duration. `syncStemClipsFor` now snapshots every source's
-position/duration at the very top of the function, before its own
-growth logic runs that same pass, and pins untouched stems to that
-snapshot rather than the live value — so a section resized or moved
-*directly* (its own trim handle, a fresh drop, dragging the whole
-section) still correctly carries every untouched stem along with it
-next time that lane is synced, but a single stem's own edit no longer
-cascades onto its neighbors in the same pass it happens.
+section stays exactly its own size, forever, not just for the one sync
+pass the edit happens in. This went through two versions: the first just
+directly mirrored the source's current duration every sync, so growing
+Drums silently grew Bass/Guitar/Keys/Synths/Other right along with it. A
+second version tried snapshotting the source's size *before* that same
+sync's own growth and pinning untouched stems to the snapshot instead —
+which stopped the growth from visibly cascading in the same interaction,
+but an untouched stem would still quietly catch up to the section's new
+(grown) size the next time that lane was re-synced (e.g. collapsing and
+reopening the exploded view), which wasn't wanted either. A stem's
+duration, once generated, is now simply never touched again by anything
+but the user's own edit — full stop, no matter how many times its lane
+gets re-synced afterward. `clips.stem` was never read by the audio
+engine to begin with (see above), so there's no real underlying audio
+this needs to stay accurate to; the point of this view is showing what
+independently-editable per-instrument stems would *look and behave*
+like on the real thing, the way an actual engineer building that mobile
+app would need to see it — not keeping a literal mirror of the one real
+clip in sync. Position is the one thing that still tracks the source
+(so a stem stays anchored to the right point in time if its section
+moves), pinned to a pre-this-sync-pass snapshot for the same
+don't-cascade-onto-siblings reason.
 
 `stemOverhangsFor` and the bleed itself work in both directions, not
 just rightward: dragging a stem's *left* edge (or its whole body) back
