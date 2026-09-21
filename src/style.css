@@ -1064,6 +1064,23 @@
   .row-secondary { display: none; }
   .row-secondary.show { display: flex; }
 
+  /* A collapsed secondary lane still plays -- this thin strip (same idea
+     as the FX row, just presence-only, no labels) stays visible under
+     the primary row whenever that happens, so a clip contributing sound
+     never becomes literally invisible. Hidden again once the secondary
+     lane is empty or its own row is showing (nothing left to indicate). */
+  .indicator-row { display: none; height: 8px; border-top: none; }
+  .indicator-row.show { display: flex; }
+  .indicator-lane { background: none; }
+  .indicator-seg {
+    position: absolute;
+    top: 0; bottom: 0;
+    border-radius: 2px;
+    background: var(--cyan);
+    opacity: 0.75;
+  }
+  .indicator-lane.beats .indicator-seg { background: var(--pink); }
+
   /* The exploded stem breakdown replaces whichever Beats lane (primary or
      secondary -- only one at a time) triggered it: that lane's own
      row-lane empties out (clips.stem lives in its own separate array, see

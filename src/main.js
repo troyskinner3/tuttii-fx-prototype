@@ -445,6 +445,10 @@
   const stemLaneEls = {};
   STEM_KEYS.forEach(k => { stemLaneEls[k] = document.getElementById("stemLane" + k[0].toUpperCase() + k.slice(1)); });
   const stemPreviewHint = document.getElementById("stemPreviewHint");
+  const vocalIndicatorRow = document.getElementById("vocalIndicatorRow");
+  const vocalIndicatorLane = document.getElementById("vocalIndicatorLane");
+  const beatsIndicatorRow = document.getElementById("beatsIndicatorRow");
+  const beatsIndicatorLane = document.getElementById("beatsIndicatorLane");
   const scrubLane = document.getElementById("scrubLane");
   const playhead = document.getElementById("playhead");
   const timeCur = document.getElementById("timeCur");
@@ -515,13 +519,17 @@
   // not just built once -- these are static inline styles computed at
   // build time, not recalculated per-render like clips/playhead are.
   const barLineLanes = [vocalLane, beatsLane, fxLane, vocalLane2, beatsLane2, ...STEM_KEYS.map(k => stemLaneEls[k])];
+  // Presence-only strips (see renderClips) -- share the same bar-to-px
+  // coordinate space as every other lane so their segments line up, but
+  // are too thin to usefully show a bar grid of their own.
+  const indicatorLanes = [vocalIndicatorLane, beatsIndicatorLane];
   function buildTimelineGrid() {
     barLineLanes.forEach(lane => lane.querySelectorAll(".bar-line").forEach(el => el.remove()));
     scrubLane.querySelectorAll(".scrub-tick").forEach(el => el.remove());
 
     const contentWidth = barsToPx(TOTAL_BARS);
     scrollInner.style.width = (LABEL_W + contentWidth) + "px";
-    [...barLineLanes, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
+    [...barLineLanes, ...indicatorLanes, scrubLane].forEach(el => { el.style.width = contentWidth + "px"; });
 
     for (let b = 0; b < TOTAL_BARS; b++) {
       barLineLanes.forEach(lane => {
@@ -1098,6 +1106,24 @@
     return bars;
   }
 
+  // A collapsed secondary lane's presence strip: one small pip per clip
+  // currently in `laneClips`, positioned/widthed exactly like a real clip
+  // (barsToPx), just unlabeled and 8px tall. Hidden entirely once the
+  // lane is empty or its own full row is already showing.
+  function renderSecondaryIndicator(rowEl, laneEl, laneClips, expanded) {
+    laneEl.querySelectorAll(".indicator-seg").forEach(el => el.remove());
+    const show = !expanded && laneClips.length > 0;
+    rowEl.classList.toggle("show", show);
+    if (!show) return;
+    laneClips.forEach(c => {
+      const seg = document.createElement("div");
+      seg.className = "indicator-seg";
+      seg.style.left = barsToPx(c.position) + "px";
+      seg.style.width = barsToPx(c.duration) + "px";
+      laneEl.appendChild(seg);
+    });
+  }
+
   // ---------- Render clips ----------
   function renderClips() {
     vocalLane.querySelectorAll(".clip").forEach(el => el.remove());
@@ -1133,6 +1159,15 @@
     beatsRow2.classList.toggle("show", beatsExpanded);
     beatsExpandBtn.classList.toggle("expanded", beatsExpanded);
 
+    // A collapsed secondary lane still contributes real sound -- show a
+    // thin presence strip under the primary row (one small segment per
+    // clip, no labels, same idea as the FX row) whenever that's true, so
+    // "there's audio playing from somewhere I can't currently see" never
+    // happens silently. Redundant once the lane's own row is visible (its
+    // real clips already show there), so only shown while collapsed.
+    renderSecondaryIndicator(vocalIndicatorRow, vocalIndicatorLane, clips.vocal2, vocalExpanded);
+    renderSecondaryIndicator(beatsIndicatorRow, beatsIndicatorLane, clips.beats2, beatsExpanded);
+
     // ---------- Exploded stem view (UI-only, see README) ----------
     // Whichever Beats lane is exploded (if either) empties its own
     // row-lane out -- the same content now shows one instrument per row
@@ -1148,6 +1183,7 @@
       : explodedLane === 1 ? beatsRow2.nextElementSibling
       : null;
     if (stemAnchor && stemAnchor !== stemRows) scrollInner.insertBefore(stemRows, stemAnchor);
+    if (explodedLane !== null) syncStemClipsFor(explodedLane);
     STEM_KEYS.forEach(k => {
       clips.stem.filter(c => c.stemKey === k && c.stemLane === explodedLane)
         .forEach(c => stemLaneEls[k].appendChild(buildClipEl(c)));
@@ -1330,6 +1366,11 @@
           // Secondary lane / stem preview: freeform like FX, but single-slot
           // -- no vertical restack to check for, just the horizontal commit.
           moveFreeformClip(clip, clip.position + liveDx);
+          // A stem clip the user has actually dragged becomes their own
+          // creation from here on -- syncStemClipsFor no longer pins it
+          // back to its source clip's position, or deletes it if that
+          // source is later removed.
+          if (clip.track === "stem") clip.manuallyAdjusted = true;
           renderClips();
           selectClip(clip.uid);
         } else {
@@ -1499,6 +1540,8 @@
         // = duration up, right edge fixed); a right-handle trim already
         // left position untouched above.
         if (side === "left") clip.position = Math.max(0, (clip.position + startDur) - newDuration);
+        // Trimmed by hand -- see the matching note in startClipMove.
+        if (type === "stem") clip.manuallyAdjusted = true;
       } else {
         // Vocal/Beats: this clip's position is untouched, and layout()
         // pushes everything after it out to make room, guaranteeing no
@@ -2226,6 +2269,11 @@
       const list = freeformListFor(clone);
       while (singleSlotExceedsCap(list, { position: pos, duration: clone.duration }, clone.uid) && pos < TOTAL_BARS) pos++;
       clone.position = pos;
+      // A duplicated stem clip is a second, independent instance now, not
+      // another mirror of the same source clip -- exempt it from
+      // syncStemClipsFor the same as a manually dragged one, so it isn't
+      // silently deleted the moment the original source clip is.
+      if (type === "stem") clone.manuallyAdjusted = true;
       arr.push(clone);
     } else {
       arr.splice(idx + 1, 0, clone);
@@ -2266,24 +2314,49 @@
   });
 
   // ---------- Exploded stem view (UI-only prototype) ----------
-  // Generates one placeholder clip per (existing real clip in that Beats
-  // lane) x (each of the six stems), mirroring position/duration exactly
-  // -- but only the first time that lane is exploded; re-exploding it
-  // later shows whatever state those placeholders were left in, same as
-  // any other clip. Deliberately not wired into buildFxUnit/scheduleClip
-  // anywhere -- clips.stem is never read by the audio engine, so nothing
-  // here can affect actual playback or export, per the "view-only" scope
-  // this was explicitly asked to stay within.
-  function ensureStemClipsFor(lane) {
-    if (clips.stem.some(c => c.stemLane === lane)) return;
+  // Keeps clips.stem in lockstep with whichever Beats lane is currently
+  // exploded, called fresh on every renderClips() rather than once at
+  // explode-time -- otherwise adding/trimming/deleting a real Beats clip
+  // after opening the exploded view left it showing a stale snapshot
+  // (reported: the instrumental section's length not matching the
+  // exploded stems', and a newly-added section not appearing in the
+  // breakdown at all). Each auto-generated stem clip remembers which real
+  // clip it mirrors via .sourceUid, and stays pinned to that clip's
+  // *current* position/duration -- except one the user has actually
+  // dragged/trimmed/duplicated themselves (.manuallyAdjusted), which is
+  // treated as the user's own creation from then on: exempt from being
+  // synced back into place, and from disappearing if its source is later
+  // deleted. Deliberately not wired into buildFxUnit/scheduleClip anywhere
+  // -- clips.stem is never read by the audio engine, so nothing here can
+  // affect actual playback or export, per the "view-only" scope this was
+  // explicitly asked to stay within.
+  function syncStemClipsFor(lane) {
     const sourceClips = clips[lane === 0 ? "beats" : "beats2"];
+    const sourceByUid = new Map(sourceClips.map(c => [c.uid, c]));
+
+    // A real clip got deleted -- drop its mirrors, but never a stem the
+    // user has since made their own by touching it.
+    clips.stem = clips.stem.filter(c =>
+      c.stemLane !== lane || c.manuallyAdjusted || sourceByUid.has(c.sourceUid));
+
+    // A still-existing source clip moved/resized -- follow it, same caveat.
+    clips.stem.forEach(c => {
+      if (c.stemLane !== lane || c.manuallyAdjusted) return;
+      const src = sourceByUid.get(c.sourceUid);
+      if (src) { c.position = src.position; c.duration = src.duration; }
+    });
+
+    // A new (or not-yet-exploded) real clip -- generate its six mirrors.
     STEM_KEYS.forEach(stemKey => {
       sourceClips.forEach(src => {
+        const exists = clips.stem.some(c => c.stemLane === lane && c.stemKey === stemKey && c.sourceUid === src.uid);
+        if (exists) return;
         clips.stem.push({
           uid: uidCounter++,
           track: "stem",
           stemKey,
           stemLane: lane,
+          sourceUid: src.uid,
           label: STEM_LABELS[stemKey],
           position: src.position,
           duration: src.duration,
@@ -2294,7 +2367,6 @@
   }
   function setExplodedLane(lane) {
     explodedLane = (explodedLane === lane) ? null : lane;
-    if (explodedLane !== null) ensureStemClipsFor(explodedLane);
     renderClips();
   }
   beatsExplodeBtn.addEventListener("click", () => setExplodedLane(0));

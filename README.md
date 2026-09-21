@@ -504,20 +504,44 @@ simultaneously with the first needed zero audio-engine changes.
 
 **Exploded stems** are UI-only — a `row-explode-btn` on the Beats row
 (primary and secondary both have one, but only one lane can be exploded
-at a time, `explodedLane`: `0`, `1`, or `null`) swaps that lane's single
-row for six fixed sub-lanes (Drums/Bass/Guitar/Keys/Synths/Other,
+at a time, `explodedLane`: `0`, `1`, or `null`, its icon a single line on
+the left branching into three on the right) swaps that lane's single row
+for six fixed sub-lanes (Drums/Bass/Guitar/Keys/Synths/Other,
 `STEM_KEYS`), each holding one placeholder clip per real clip currently
-in that Beats lane, generated once on first explode
-(`ensureStemClipsFor`) by mirroring position/duration exactly. They're
-fully interactive — move/trim/duplicate/delete all reuse the same
-generic clip machinery every other clip uses — but live in their own
-`clips.stem` array (one array for all six instruments and both possible
-exploded lanes at once, disambiguated by `.stemKey`/`.stemLane`) that
-the audio engine never reads: `clips.stem` never appears in either
-scheduling spread, so nothing here can affect actual playback or
-export, which is deliberately as far as this pass goes. The inspector
-shows a "Preview only" hint on a selected stem clip so that's not a
-surprise while poking at one.
+in that Beats lane. They're fully interactive — move/trim/duplicate/
+delete all reuse the same generic clip machinery every other clip uses
+— but live in their own `clips.stem` array (one array for all six
+instruments and both possible exploded lanes at once, disambiguated by
+`.stemKey`/`.stemLane`) that the audio engine never reads: `clips.stem`
+never appears in either scheduling spread, so nothing here can affect
+actual playback or export, which is deliberately as far as this pass
+goes. The inspector shows a "Preview only" hint on a selected stem clip
+so that's not a surprise while poking at one.
+
+`syncStemClipsFor` keeps that mirror live rather than generating it once
+and letting it go stale — the first version only ran at explode-time,
+so adding, trimming, or deleting a real Beats clip *after* opening the
+exploded view left it showing the old snapshot (reported: the real
+section's length not matching the exploded stems', and a newly-added
+section missing from the breakdown entirely). It's called fresh on every
+`renderClips()` instead, reconciled against the real lane by each stem
+clip's `.sourceUid`: new source clips get their six mirrors generated,
+deleted ones' mirrors are removed, and still-existing ones' position/
+duration are kept pinned to their source's current values. The one
+exception is `.manuallyAdjusted` — set the moment a user actually drags,
+trims, or duplicates a stem clip themselves, which exempts it from both
+the position-pinning and the delete-on-source-removed cleanup from then
+on, since at that point it reads as the user's own creation rather than
+a live mirror of something else.
+
+**A collapsed secondary lane still contributes real audio**, which
+otherwise made it disappear entirely from view -- a thin presence strip
+(`renderSecondaryIndicator`, one unlabeled segment per clip, same idea as
+the FX row) now sits directly under the primary Vocal/Beats row whenever
+its secondary lane has content and is currently collapsed, so "there's
+sound coming from somewhere I can't see" can't happen silently. It hides
+itself again once the secondary lane is either empty or already visible
+(its own row already shows the same clips directly).
 
 Screen space is the real open question here, flagged but intentionally
 not solved yet: Vocal + Vocal2 + Beats exploded into six rows + Beats2 +
