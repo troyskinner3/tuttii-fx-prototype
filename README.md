@@ -628,6 +628,21 @@ section's same-instrument stem already occupies, and that overhang
 **is** the bleed effect, not a double-booking to reject the way the
 secondary lane's single slot would.
 
+**Deleting a stem** needed its own fix: the inspector's trash icon
+correctly removed it from `clips.stem`, but `syncStemClipsFor`'s "fill in
+any (stemKey, source) pair that doesn't exist yet" step can't otherwise
+tell "never generated" from "the user just deleted this" — so on the
+very next render it just recreated the one that was deleted, making
+delete silently no-op (masked in the original test coverage, which
+happened to duplicate a stem before deleting it — the duplicate, sharing
+the same `.sourceUid`, satisfied the exists-check and hid the bug).
+Fixed with a tombstone list, `clips.deletedStems` (`{sourceUid, stemKey,
+stemLane}`), checked by that same generation step and part of the same
+`clips` object everything else's undo/redo snapshot already covers, so
+undoing a stem delete correctly un-tombstones it too. Entries are pruned
+once their source clip no longer exists, so the list doesn't grow
+unbounded over a long session.
+
 **Moving the section a bled/grown stem belongs to** preserves the edit
 rather than resetting it or leaving the stem stranded at its old
 absolute position: `.sourcePosAtSync` records each stem's source clip's

@@ -280,7 +280,16 @@
   // exploded lanes (stemLane: 0 or 1, whichever Beats lane was exploded)
   // and all six stemKeys at once, undifferentiated by any array split --
   // it's UI-only (see explodedLane below), never scheduled for audio.
-  let clips = { vocal: [], beats: [], vocal2: [], beats2: [], fx: [], stem: [] };
+  //
+  // deletedStems is a tombstone list -- {sourceUid, stemKey, stemLane} --
+  // for a stem the user explicitly deleted. Without it, syncStemClipsFor's
+  // "generate any (stemKey, source) pair that doesn't exist yet" step
+  // can't tell "never created" from "deliberately removed," and just
+  // recreates the deleted one on the very next render, making delete
+  // silently no-op. Part of the same undo/redo-tracked snapshot as
+  // everything else in `clips`, so undoing a stem delete un-tombstones
+  // it too.
+  let clips = { vocal: [], beats: [], vocal2: [], beats2: [], fx: [], stem: [], deletedStems: [] };
   let uidCounter = 1;
   let selectedUid = null;
   // Accordion state for the secondary lanes -- view-only, not part of
@@ -2328,6 +2337,12 @@
     if (selectedUid == null) return;
     const original = findClip(selectedUid);
     const type = original ? original.track : null;
+    // Record the tombstone before filtering it out -- see the note on
+    // clips.deletedStems -- so the very next sync doesn't just recreate
+    // the stem this delete is trying to remove.
+    if (original && type === "stem") {
+      clips.deletedStems.push({ sourceUid: original.sourceUid, stemKey: original.stemKey, stemLane: original.stemLane });
+    }
     ["vocal", "beats", "vocal2", "beats2", "fx", "stem"].forEach(t => { clips[t] = clips[t].filter(c => c.uid !== selectedUid); });
     // Freeform tracks (fx, vocal2/beats2, stem) are freely positioned --
     // deleting one shouldn't drag its remaining siblings' positions along
@@ -2481,11 +2496,23 @@
       c.sourcePosAtSync = src.position;
     });
 
-    // A new (or not-yet-exploded) real clip -- generate its six mirrors.
+    // A real clip's source is gone -- its tombstones (if any) are now
+    // meaningless, so drop them rather than letting the list grow
+    // forever across a long session.
+    clips.deletedStems = clips.deletedStems.filter(d =>
+      d.stemLane !== lane || sourceByUid.has(d.sourceUid));
+
+    // A new (or not-yet-exploded) real clip -- generate its six mirrors,
+    // unless the user explicitly deleted this exact (stemKey, source)
+    // pair already -- without that check, deleting a stem just brought
+    // it right back on the next sync.
     STEM_KEYS.forEach(stemKey => {
       sourceClips.forEach(src => {
         const exists = clips.stem.some(c => c.stemLane === lane && c.stemKey === stemKey && c.sourceUid === src.uid);
         if (exists) return;
+        const deleted = clips.deletedStems.some(d =>
+          d.stemLane === lane && d.stemKey === stemKey && d.sourceUid === src.uid);
+        if (deleted) return;
         clips.stem.push({
           uid: uidCounter++,
           track: "stem",
@@ -2570,6 +2597,7 @@
     clips.beats2 = [];
     clips.fx = [];
     clips.stem = [];
+    clips.deletedStems = [];
     vocalExpanded = false;
     beatsExpanded = false;
     explodedLane = null;
