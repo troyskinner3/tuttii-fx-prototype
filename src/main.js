@@ -1199,7 +1199,15 @@
   function buildClipEl(clip) {
     const el = document.createElement("div");
     const cssTrack = clip.audioTrack || clip.track; // vocal2/beats2 look like their real stem; stem keeps its own "stem" class
-    el.className = "clip " + cssTrack + (clip.isSilence ? " silence" : "") + (clip.uid === selectedUid ? " selected" : "");
+    // A real Beats/Beats2 clip whose exploded breakdown has been hand-edited
+    // no longer necessarily sounds like what the breakdown shows (stems are
+    // UI-only, see syncStemClipsFor) -- flag it so that's not a silent trap,
+    // especially once the exploded view is collapsed again and the mismatch
+    // itself is out of sight.
+    const hasEditedStems = (clip.track === "beats" || clip.track === "beats2")
+      && clips.stem.some(c => c.sourceUid === clip.uid && c.manuallyAdjusted);
+    el.className = "clip " + cssTrack + (clip.isSilence ? " silence" : "")
+      + (clip.uid === selectedUid ? " selected" : "") + (hasEditedStems ? " stem-edited" : "");
     el.style.left = barsToPx(clip.position) + "px";
     el.style.width = barsToPx(clip.duration) + "px";
     el.dataset.uid = clip.uid;
@@ -2331,7 +2339,28 @@
   // affect actual playback or export, per the "view-only" scope this was
   // explicitly asked to stay within.
   function syncStemClipsFor(lane) {
-    const sourceClips = clips[lane === 0 ? "beats" : "beats2"];
+    const sourceType = lane === 0 ? "beats" : "beats2";
+    const sourceClips = clips[sourceType];
+
+    // The other direction: a manually-extended stem can now reach past
+    // its own source clip's right edge -- grow the source to cover it
+    // (never shrink, never move its start) so the instrumental section
+    // honestly represents what's inside it, rather than a stem quietly
+    // overhanging the section it's supposedly part of. Beats is
+    // flush-packed, so a source clip growing has to reflow whatever comes
+    // after it too, same as any other trim -- layout() does that.
+    let grew = false;
+    sourceClips.forEach(src => {
+      const maxRight = clips.stem
+        .filter(c => c.stemLane === lane && c.sourceUid === src.uid)
+        .reduce((m, c) => Math.max(m, c.position + c.duration), src.position + src.duration);
+      if (maxRight > src.position + src.duration) {
+        src.duration = maxRight - src.position;
+        grew = true;
+      }
+    });
+    if (grew) layout(sourceType);
+
     const sourceByUid = new Map(sourceClips.map(c => [c.uid, c]));
 
     // A real clip got deleted -- drop its mirrors, but never a stem the

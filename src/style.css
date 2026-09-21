@@ -11,6 +11,7 @@
     --border: #33224F;
     --label-w: 66px;
     --amber: #F0A93E;
+    --warn-yellow: #F0D848;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -1111,3 +1112,10 @@
 
   .stem-preview-hint { display: none; color: var(--violet); }
   .stem-preview-hint.show { display: block; }
+
+  /* A real Beats/Beats2 clip whose exploded stems have been hand-edited --
+     the clip's actual audio hasn't changed (stems are UI-only), so this is
+     a warning that what's shown in the breakdown no longer matches what
+     plays. outline (not border/box-shadow) so it layers cleanly over
+     .selected's own border-color/box-shadow instead of fighting it. */
+  .clip.stem-edited { outline: 2px solid var(--warn-yellow); outline-offset: 1px; }

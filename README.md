@@ -534,6 +534,30 @@ the position-pinning and the delete-on-source-removed cleanup from then
 on, since at that point it reads as the user's own creation rather than
 a live mirror of something else.
 
+The reverse direction matters too: a manually-extended stem can reach
+past its own source clip's right edge, and when it does, `syncStemClipsFor`
+grows the real Beats clip's `.duration` to cover it (never shrinks, never
+moves the start) — "the instrumental section" should honestly represent
+what's inside its own breakdown, not have a stem quietly overhanging the
+section it's supposedly part of. Beats is flush-packed, so a source clip
+growing calls `layout()` afterward the same as any other trim would, to
+reflow whatever comes after it rather than silently starting an overlap.
+That growth then also carries into every *other*, untouched stem tied to
+that same source clip (they're still pinned to its current duration),
+so extending one instrument doesn't leave its neighbors newly out of sync.
+
+Because that growth changes what the real clip actually plays without
+changing what it visually promised before, a real Beats/Beats2 clip gets
+a yellow outline (`.stem-edited`, an `outline` rather than
+`border`/`box-shadow` so it layers over `.selected`'s own styling instead
+of fighting it) whenever any of its stem mirrors carry
+`.manuallyAdjusted` — checked directly off `clips.stem` by `.sourceUid`
+in `buildClipEl`, so it's visible on the real clip regardless of whether
+its lane happens to be exploded right now. The point is specifically for
+*after* collapsing the exploded view: the mismatch between "what this
+section looks like" and "what's actually been rearranged inside it"
+shouldn't require reopening the breakdown to notice.
+
 **A collapsed secondary lane still contributes real audio**, which
 otherwise made it disappear entirely from view -- a thin presence strip
 (`renderSecondaryIndicator`, one unlabeled segment per clip, same idea as
