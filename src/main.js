@@ -1123,22 +1123,27 @@
     });
   }
 
-  // A stem bled into the next real clip instead of growing its own source
-  // (see syncStemClipsFor) -- draw that overhang as a dotted, dim ghost
-  // rectangle starting exactly at the boundary between the two real
-  // clips, spanning as far into the next one as the overhang reaches, so
-  // the effect stays visible on the primary Beats row without having to
-  // reopen the exploded view to see how far it goes.
+  // A stem bled into a neighboring real clip instead of growing its own
+  // source (see syncStemClipsFor) -- draw that overhang as a dashed,
+  // ghost rectangle starting exactly at the boundary between the two real
+  // clips, spanning as far into the neighbor as the overhang reaches, in
+  // whichever direction(s) it went. Visible on the primary Beats row
+  // without having to reopen the exploded view to see how far it goes.
   function renderBleedIndicators(laneEl, overhangs, sourceClips) {
     laneEl.querySelectorAll(".bleed-indicator").forEach(el => el.remove());
-    overhangs.forEach((bars, srcUid) => {
-      const src = sourceClips.find(c => c.uid === srcUid);
-      if (!src) return;
+    function addGhost(left, bars) {
       const el = document.createElement("div");
       el.className = "bleed-indicator";
-      el.style.left = barsToPx(src.position + src.duration) + "px";
+      el.style.left = barsToPx(left) + "px";
       el.style.width = barsToPx(bars) + "px";
       laneEl.appendChild(el);
+    }
+    overhangs.forEach((oh, srcUid) => {
+      const idx = sourceClips.findIndex(c => c.uid === srcUid);
+      if (idx === -1) return;
+      const src = sourceClips[idx];
+      if (oh.right > 0 && sourceClips[idx + 1]) addGhost(src.position + src.duration, oh.right);
+      if (oh.left > 0 && sourceClips[idx - 1]) addGhost(src.position - oh.left, oh.left);
     });
   }
 
@@ -2348,23 +2353,24 @@
   });
 
   // ---------- Exploded stem view (UI-only prototype) ----------
-  // A manually-extended stem's overhang past its own source clip's right
-  // edge, in bars -- 0/absent if it doesn't reach past it. Only
+  // A manually-adjusted stem's overhang past its own source clip's edges,
+  // in bars each direction -- 0 on a side it doesn't reach past. Only
   // .manuallyAdjusted stems count: an untouched one is always pinned
   // exactly to its source (see syncStemClipsFor below) and can only look
   // like it overhangs when its lane hasn't been re-synced since the
-  // source last moved/shrank, which isn't a real bleed, just staleness.
+  // source last moved/resized, which isn't a real bleed, just staleness.
   // Safe to call for a lane that isn't currently exploded -- reads
   // clips.stem as of its last sync, same as the .stem-edited flag does.
   function stemOverhangsFor(lane) {
     const sourceClips = clips[lane === 0 ? "beats" : "beats2"];
     const overhangs = new Map();
     sourceClips.forEach(src => {
-      const maxRight = clips.stem
-        .filter(c => c.stemLane === lane && c.sourceUid === src.uid && c.manuallyAdjusted)
-        .reduce((m, c) => Math.max(m, c.position + c.duration), src.position + src.duration);
-      const overhang = maxRight - (src.position + src.duration);
-      if (overhang > 0) overhangs.set(src.uid, overhang);
+      const mirrors = clips.stem.filter(c => c.stemLane === lane && c.sourceUid === src.uid && c.manuallyAdjusted);
+      const maxRight = mirrors.reduce((m, c) => Math.max(m, c.position + c.duration), src.position + src.duration);
+      const minLeft = mirrors.reduce((m, c) => Math.min(m, c.position), src.position);
+      const right = Math.max(0, maxRight - (src.position + src.duration));
+      const left = Math.max(0, src.position - minLeft);
+      if (right > 0 || left > 0) overhangs.set(src.uid, { left, right });
     });
     return overhangs;
   }
@@ -2393,21 +2399,44 @@
     const sourceClips = clips[sourceType];
     const flushPacked = lane === 0; // beats2 is freeform/single-slot, not flush-packed -- see the secondary-lane section above
 
+    // Snapshot each source's position/duration *before* this pass's own
+    // stem-driven growth (below) -- untouched stems pin to this snapshot,
+    // not the grown values, so extending one instrument doesn't silently
+    // stretch every other untouched stem in the same section along with
+    // it (reported: growing Drums was growing Bass/Guitar/Keys/Synths/
+    // Other too). A section resized or moved *directly* -- its own trim
+    // handle, a fresh drop, startClipMove -- already has its new values
+    // here by the time this runs, so untouched stems still correctly
+    // track that kind of change; this snapshot only excludes the
+    // incremental change this exact sync pass is about to make itself.
+    const beforeGrowth = new Map(sourceClips.map(c => [c.uid, { position: c.position, duration: c.duration }]));
+
     // An overhanging stem grows its source to cover it only when there's
-    // genuinely nothing in the way (the end of the flush-packed sequence,
-    // or beats2's own lone clip) -- pushing a *next* real section forward
-    // instead would break the classic use case this is for (bleeding one
-    // instrument across a transition into the next section, not delaying
-    // that section). Left as an overhang there instead, surfaced via the
-    // dotted bleed-indicator (see renderClips) rather than resolved here.
+    // genuinely nothing in the way on that side (the start/end of the
+    // flush-packed sequence, or either edge of beats2's own lone clip) --
+    // pushing a neighboring real section instead would break the classic
+    // use case this is for (bleeding one instrument across a transition
+    // into the adjacent section, not displacing that section). Left as
+    // an overhang there instead, surfaced via the dotted bleed-indicator
+    // (see renderClips) rather than resolved here.
     let grew = false;
     const overhangs = stemOverhangsFor(lane);
     sourceClips.forEach((src, idx) => {
-      const overhang = overhangs.get(src.uid);
-      if (!overhang) return;
+      const oh = overhangs.get(src.uid);
+      if (!oh) return;
       const nextClip = flushPacked ? sourceClips[idx + 1] : null;
-      if (!nextClip) {
-        src.duration += overhang;
+      const prevClip = flushPacked ? sourceClips[idx - 1] : null;
+      if (oh.right > 0 && !nextClip) {
+        src.duration += oh.right;
+        grew = true;
+      }
+      if (oh.left > 0 && !prevClip) {
+        // Flush-packed lane 0's first clip always sits at bar 0 already
+        // (layout() enforces it) and a stem can't be dragged past 0
+        // either (snap() clamps there), so this is unreachable for it --
+        // only beats2's freeform lone clip can actually grow leftward.
+        src.position = Math.max(0, src.position - oh.left);
+        src.duration += oh.left;
         grew = true;
       }
     });
@@ -2421,7 +2450,9 @@
       c.stemLane !== lane || c.manuallyAdjusted || sourceByUid.has(c.sourceUid));
 
     // A still-existing source clip moved/resized -- an untouched stem
-    // follows it exactly; a manually-adjusted one instead shifts by
+    // follows it, pinned to the pre-this-sync snapshot (see above) rather
+    // than the live value, so it tracks a real move/resize but not a
+    // sibling stem's own edit. A manually-adjusted one instead shifts by
     // however far its source moved *since this stem's last sync*,
     // preserving the user's own edit (e.g. how far it bleeds into the
     // next section) rather than discarding it just because the section
@@ -2434,8 +2465,9 @@
         const delta = src.position - (c.sourcePosAtSync ?? src.position);
         if (delta) c.position += delta;
       } else {
-        c.position = src.position;
-        c.duration = src.duration;
+        const snap = beforeGrowth.get(c.sourceUid) || src;
+        c.position = snap.position;
+        c.duration = snap.duration;
       }
       c.sourcePosAtSync = src.position;
     });

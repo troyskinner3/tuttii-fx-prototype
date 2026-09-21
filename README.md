@@ -572,13 +572,37 @@ the exploded view: the mismatch between "what this section looks like"
 and "what's actually been rearranged inside it" shouldn't require
 reopening the breakdown to notice.
 
+Growing (or leaving as a bleed) is the *only* thing that changes as a
+result of one stem's edit — every other, untouched stem in that same
+section stays exactly its own size. Early on this wasn't true: growing
+Drums was silently growing Bass/Guitar/Keys/Synths/Other along with it,
+since the sibling-pinning step read the source's *already-grown*
+duration. `syncStemClipsFor` now snapshots every source's
+position/duration at the very top of the function, before its own
+growth logic runs that same pass, and pins untouched stems to that
+snapshot rather than the live value — so a section resized or moved
+*directly* (its own trim handle, a fresh drop, dragging the whole
+section) still correctly carries every untouched stem along with it
+next time that lane is synced, but a single stem's own edit no longer
+cascades onto its neighbors in the same pass it happens.
+
+`stemOverhangsFor` and the bleed itself work in both directions, not
+just rightward: dragging a stem's *left* edge (or its whole body) back
+into the *previous* section behaves exactly the same as extending its
+right edge into the next one — same "grow only if there's nothing in
+the way" rule (unreachable for Beats' own first clip, which `layout()`
+always pins to bar 0 and can't be dragged earlier than anyway, but very
+real for Beats2's lone freeform clip, which can grow on either edge),
+same ghost-overlay treatment otherwise, just drawn over the *previous*
+clip's tail instead of the next clip's start.
+
 **The bleed indicator** (`renderBleedIndicators`) is a dashed, unfilled
-ghost rectangle drawn *over* the next real clip's own start — not beside
-it as a clip of its own — spanning exactly as far as the overhang
-reaches (`stemOverhangsFor`, shared with the grow-vs-bleed decision
-above, filtered to only ever consider `.manuallyAdjusted` stems: an
-untouched one is always pinned exactly to its source and can only look
-like it overhangs when its lane's gone stale from not being the
+ghost rectangle drawn *over* the neighboring real clip — not beside it
+as a clip of its own — spanning exactly as far as the overhang reaches
+(`stemOverhangsFor`, shared with the grow-vs-bleed decision above,
+filtered to only ever consider `.manuallyAdjusted` stems: an untouched
+one is always pinned exactly to its source and can only look like it
+overhangs when its lane's gone stale from not being the
 currently-exploded one, which isn't a real bleed). White rather than a
 dim gray at low opacity, which turned out to be effectively invisible
 against a busy waveform — needed enough contrast to read against any
@@ -588,9 +612,10 @@ clip it's drawn over.
 
 A stem clip itself has no overlap cap at all (`freeformListFor` returns
 `[]` for `track === "stem"`) — it needs to be draggable past its own
-source's edge into whatever the *next* section's same-instrument stem
-already occupies, and that overhang **is** the bleed effect, not a
-double-booking to reject the way the secondary lane's single slot would.
+source's edge in either direction, into whatever the neighboring
+section's same-instrument stem already occupies, and that overhang
+**is** the bleed effect, not a double-booking to reject the way the
+secondary lane's single slot would.
 
 **Moving the section a bled/grown stem belongs to** preserves the edit
 rather than resetting it or leaving the stem stranded at its old
