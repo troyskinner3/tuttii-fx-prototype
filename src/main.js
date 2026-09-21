@@ -119,25 +119,24 @@
   // Three positioning models now coexist: flush-packed (vocal/beats,
   // layout()), freely-positioned-and-stacked (fx, up to MAX_FX_LAYERS deep,
   // above), and freely-positioned-but-single-slot -- this section -- for
-  // anything where overlap should just be rejected outright rather than
-  // stacked: the secondary Vocal/Beats lane (only one clip at a time, no
-  // layering) and each exploded stem sub-lane (same rule, scoped to its
-  // own stemKey+stemLane). All three still share fxTimeOverlap.
+  // the secondary Vocal/Beats lane, where overlap is rejected outright
+  // (only one clip at a time, no layering). All three still share
+  // fxTimeOverlap.
   function isFreeformTrack(track) {
     return track === "fx" || track === "vocal2" || track === "beats2" || track === "stem";
   }
   function singleSlotExceedsCap(list, candidate, excludeUid) {
     return list.some(c => c.uid !== excludeUid && fxTimeOverlap(candidate, c));
   }
-  function stemListFor(stemKey, stemLane) {
-    return clips.stem.filter(c => c.stemKey === stemKey && c.stemLane === stemLane);
-  }
   // The comparison group a given freeform-single clip's overlap is judged
   // against -- the whole secondary-lane array for vocal2/beats2 (there's
-  // only ever one lane's worth), or just this one stem sub-lane's own
-  // clips for a stem preview (each of the six is its own independent slot).
+  // only ever one lane's worth). A stem preview has no cap at all: it
+  // needs to be draggable past its own source's edge and into whatever
+  // sits in the next real section's slot for the same instrument -- that
+  // overhang *is* the bleed effect (see syncStemClipsFor), not a
+  // double-booking to reject.
   function freeformListFor(clip) {
-    if (clip.track === "stem") return stemListFor(clip.stemKey, clip.stemLane);
+    if (clip.track === "stem") return [];
     return clips[clip.track];
   }
   // vocal2/beats2's and stem's equivalent of moveFxClip -- horizontal-only
@@ -1124,6 +1123,25 @@
     });
   }
 
+  // A stem bled into the next real clip instead of growing its own source
+  // (see syncStemClipsFor) -- draw that overhang as a dotted, dim ghost
+  // rectangle starting exactly at the boundary between the two real
+  // clips, spanning as far into the next one as the overhang reaches, so
+  // the effect stays visible on the primary Beats row without having to
+  // reopen the exploded view to see how far it goes.
+  function renderBleedIndicators(laneEl, overhangs, sourceClips) {
+    laneEl.querySelectorAll(".bleed-indicator").forEach(el => el.remove());
+    overhangs.forEach((bars, srcUid) => {
+      const src = sourceClips.find(c => c.uid === srcUid);
+      if (!src) return;
+      const el = document.createElement("div");
+      el.className = "bleed-indicator";
+      el.style.left = barsToPx(src.position + src.duration) + "px";
+      el.style.width = barsToPx(bars) + "px";
+      laneEl.appendChild(el);
+    });
+  }
+
   // ---------- Render clips ----------
   function renderClips() {
     vocalLane.querySelectorAll(".clip").forEach(el => el.remove());
@@ -1188,6 +1206,14 @@
       clips.stem.filter(c => c.stemKey === k && c.stemLane === explodedLane)
         .forEach(c => stemLaneEls[k].appendChild(buildClipEl(c)));
     });
+    // A bleed left in place (see syncStemClipsFor) shown as a dotted
+    // ghost over the next real clip's own start, spanning exactly as far
+    // as the overhang reaches -- visible whether or not Beats is
+    // currently exploded, same as .stem-edited. Only the primary Beats
+    // lane can carry one: beats2 has no "next clip" to bleed into (it's
+    // freeform/single-slot), so any overhang there is always resolved to
+    // growth in syncStemClipsFor instead, never left as a bleed.
+    renderBleedIndicators(beatsLane, stemOverhangsFor(0), clips.beats);
 
     const anyClips = clips.vocal.length > 0 || clips.beats.length > 0 || clips.fx.length > 0
       || clips.vocal2.length > 0 || clips.beats2.length > 0;
@@ -2322,6 +2348,27 @@
   });
 
   // ---------- Exploded stem view (UI-only prototype) ----------
+  // A manually-extended stem's overhang past its own source clip's right
+  // edge, in bars -- 0/absent if it doesn't reach past it. Only
+  // .manuallyAdjusted stems count: an untouched one is always pinned
+  // exactly to its source (see syncStemClipsFor below) and can only look
+  // like it overhangs when its lane hasn't been re-synced since the
+  // source last moved/shrank, which isn't a real bleed, just staleness.
+  // Safe to call for a lane that isn't currently exploded -- reads
+  // clips.stem as of its last sync, same as the .stem-edited flag does.
+  function stemOverhangsFor(lane) {
+    const sourceClips = clips[lane === 0 ? "beats" : "beats2"];
+    const overhangs = new Map();
+    sourceClips.forEach(src => {
+      const maxRight = clips.stem
+        .filter(c => c.stemLane === lane && c.sourceUid === src.uid && c.manuallyAdjusted)
+        .reduce((m, c) => Math.max(m, c.position + c.duration), src.position + src.duration);
+      const overhang = maxRight - (src.position + src.duration);
+      if (overhang > 0) overhangs.set(src.uid, overhang);
+    });
+    return overhangs;
+  }
+
   // Keeps clips.stem in lockstep with whichever Beats lane is currently
   // exploded, called fresh on every renderClips() rather than once at
   // explode-time -- otherwise adding/trimming/deleting a real Beats clip
@@ -2334,32 +2381,37 @@
   // dragged/trimmed/duplicated themselves (.manuallyAdjusted), which is
   // treated as the user's own creation from then on: exempt from being
   // synced back into place, and from disappearing if its source is later
-  // deleted. Deliberately not wired into buildFxUnit/scheduleClip anywhere
-  // -- clips.stem is never read by the audio engine, so nothing here can
-  // affect actual playback or export, per the "view-only" scope this was
-  // explicitly asked to stay within.
+  // deleted -- though it still moves *with* its source (preserving
+  // whatever the user did relative to it) rather than either freezing in
+  // place or resetting, tracked via .sourcePosAtSync. Deliberately not
+  // wired into buildFxUnit/scheduleClip anywhere -- clips.stem is never
+  // read by the audio engine, so nothing here can affect actual playback
+  // or export, per the "view-only" scope this was explicitly asked to
+  // stay within.
   function syncStemClipsFor(lane) {
     const sourceType = lane === 0 ? "beats" : "beats2";
     const sourceClips = clips[sourceType];
+    const flushPacked = lane === 0; // beats2 is freeform/single-slot, not flush-packed -- see the secondary-lane section above
 
-    // The other direction: a manually-extended stem can now reach past
-    // its own source clip's right edge -- grow the source to cover it
-    // (never shrink, never move its start) so the instrumental section
-    // honestly represents what's inside it, rather than a stem quietly
-    // overhanging the section it's supposedly part of. Beats is
-    // flush-packed, so a source clip growing has to reflow whatever comes
-    // after it too, same as any other trim -- layout() does that.
+    // An overhanging stem grows its source to cover it only when there's
+    // genuinely nothing in the way (the end of the flush-packed sequence,
+    // or beats2's own lone clip) -- pushing a *next* real section forward
+    // instead would break the classic use case this is for (bleeding one
+    // instrument across a transition into the next section, not delaying
+    // that section). Left as an overhang there instead, surfaced via the
+    // dotted bleed-indicator (see renderClips) rather than resolved here.
     let grew = false;
-    sourceClips.forEach(src => {
-      const maxRight = clips.stem
-        .filter(c => c.stemLane === lane && c.sourceUid === src.uid)
-        .reduce((m, c) => Math.max(m, c.position + c.duration), src.position + src.duration);
-      if (maxRight > src.position + src.duration) {
-        src.duration = maxRight - src.position;
+    const overhangs = stemOverhangsFor(lane);
+    sourceClips.forEach((src, idx) => {
+      const overhang = overhangs.get(src.uid);
+      if (!overhang) return;
+      const nextClip = flushPacked ? sourceClips[idx + 1] : null;
+      if (!nextClip) {
+        src.duration += overhang;
         grew = true;
       }
     });
-    if (grew) layout(sourceType);
+    if (grew && flushPacked) layout(sourceType);
 
     const sourceByUid = new Map(sourceClips.map(c => [c.uid, c]));
 
@@ -2368,11 +2420,24 @@
     clips.stem = clips.stem.filter(c =>
       c.stemLane !== lane || c.manuallyAdjusted || sourceByUid.has(c.sourceUid));
 
-    // A still-existing source clip moved/resized -- follow it, same caveat.
+    // A still-existing source clip moved/resized -- an untouched stem
+    // follows it exactly; a manually-adjusted one instead shifts by
+    // however far its source moved *since this stem's last sync*,
+    // preserving the user's own edit (e.g. how far it bleeds into the
+    // next section) rather than discarding it just because the section
+    // it's attached to got dragged somewhere else.
     clips.stem.forEach(c => {
-      if (c.stemLane !== lane || c.manuallyAdjusted) return;
+      if (c.stemLane !== lane) return;
       const src = sourceByUid.get(c.sourceUid);
-      if (src) { c.position = src.position; c.duration = src.duration; }
+      if (!src) return;
+      if (c.manuallyAdjusted) {
+        const delta = src.position - (c.sourcePosAtSync ?? src.position);
+        if (delta) c.position += delta;
+      } else {
+        c.position = src.position;
+        c.duration = src.duration;
+      }
+      c.sourcePosAtSync = src.position;
     });
 
     // A new (or not-yet-exploded) real clip -- generate its six mirrors.
@@ -2386,6 +2451,7 @@
           stemKey,
           stemLane: lane,
           sourceUid: src.uid,
+          sourcePosAtSync: src.position,
           label: STEM_LABELS[stemKey],
           position: src.position,
           duration: src.duration,

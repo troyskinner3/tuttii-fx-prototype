@@ -1124,3 +1124,22 @@
      a clip is both selected and edited -- the warning is the more
      important thing to see in that case. */
   .clip.beats.stem-edited { border-color: var(--warn-yellow); box-shadow: inset 0 0 0 2px var(--warn-yellow); }
+
+  /* A stem's bleed into the next real section (see syncStemClipsFor) --
+     drawn over that next clip rather than beside it, so it reads as
+     "reaches into here" rather than a clip of its own. White rather than
+     --text-dim so it reads against any clip color underneath (vocal's
+     cyan, beats' pink) instead of blending into it -- a 1px dim-gray
+     border at low opacity was invisible in practice against a busy
+     waveform. The light fill gives it a "shaded zone" presence beyond
+     just the dashed line, without hiding what's under it. Unlabeled and
+     never intercepts clicks meant for the real clip underneath. */
+  .bleed-indicator {
+    position: absolute;
+    top: 4px; bottom: 4px;
+    border: 2px dashed rgba(255,255,255,0.65);
+    background: rgba(255,255,255,0.08);
+    border-radius: 9px;
+    pointer-events: none;
+    z-index: 2;
+  }

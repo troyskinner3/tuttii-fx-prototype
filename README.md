@@ -535,28 +535,71 @@ on, since at that point it reads as the user's own creation rather than
 a live mirror of something else.
 
 The reverse direction matters too: a manually-extended stem can reach
-past its own source clip's right edge, and when it does, `syncStemClipsFor`
-grows the real Beats clip's `.duration` to cover it (never shrinks, never
-moves the start) — "the instrumental section" should honestly represent
-what's inside its own breakdown, not have a stem quietly overhanging the
-section it's supposedly part of. Beats is flush-packed, so a source clip
-growing calls `layout()` afterward the same as any other trim would, to
-reflow whatever comes after it rather than silently starting an overlap.
-That growth then also carries into every *other*, untouched stem tied to
-that same source clip (they're still pinned to its current duration),
-so extending one instrument doesn't leave its neighbors newly out of sync.
+past its own source clip's right edge. What should happen then depends on
+what's actually in the way. If there's nothing there — this is the last
+clip in the (flush-packed) Beats sequence, or the lone clip in freeform
+Beats2 — `syncStemClipsFor` just grows the real clip's `.duration` to
+cover it (never shrinks, never moves the start): "the instrumental
+section" should honestly represent what's inside its own breakdown. But
+if there's a *next* real section already sitting right there, growing
+into it would mean pushing that section forward — which breaks the
+actual point of dragging a stem past its section's edge in the first
+place: bleeding one instrument across a transition into the next
+section (a smooth crossfade point between two songs, one of the more
+obvious real uses for this feature), not delaying that next section by
+however far you dragged. So that case is left alone entirely — neither
+section's real position or duration changes — and the overhang is only
+represented visually (see the bleed indicator below). Only Beats
+(lane 0) can have a "next clip" to worry about; Beats2 is freeform/
+single-slot, so any overhang there always just grows the one clip
+(and, since it isn't flush-packed, `layout()` is never called for it —
+an earlier version called it unconditionally, which incorrectly snapped
+a freeform Beats2 clip's position back to 0 the moment its stem grew it).
+A grow also carries into every *other*, untouched stem tied to that same
+source clip (they're still pinned to its current duration), so extending
+one instrument doesn't leave its neighbors newly out of sync.
 
-Because that growth changes what the real clip actually plays without
+Because either outcome changes what the real clip actually plays without
 changing what it visually promised before, a real Beats/Beats2 clip gets
-a yellow outline (`.stem-edited`, an `outline` rather than
-`border`/`box-shadow` so it layers over `.selected`'s own styling instead
-of fighting it) whenever any of its stem mirrors carry
-`.manuallyAdjusted` — checked directly off `clips.stem` by `.sourceUid`
-in `buildClipEl`, so it's visible on the real clip regardless of whether
-its lane happens to be exploded right now. The point is specifically for
-*after* collapsing the exploded view: the mismatch between "what this
-section looks like" and "what's actually been rearranged inside it"
-shouldn't require reopening the breakdown to notice.
+a yellow border + inset ring (`.stem-edited`, `border-color` + an *inset*
+`box-shadow` rather than `outline` — an outline sits outside the clip's
+own box and visibly collided with a flush-packed neighbor sitting right
+against it) whenever any of its stem mirrors carry `.manuallyAdjusted` —
+checked directly off `clips.stem` by `.sourceUid` in `buildClipEl`, so
+it's visible on the real clip regardless of whether its lane happens to
+be exploded right now. The point is specifically for *after* collapsing
+the exploded view: the mismatch between "what this section looks like"
+and "what's actually been rearranged inside it" shouldn't require
+reopening the breakdown to notice.
+
+**The bleed indicator** (`renderBleedIndicators`) is a dashed, unfilled
+ghost rectangle drawn *over* the next real clip's own start — not beside
+it as a clip of its own — spanning exactly as far as the overhang
+reaches (`stemOverhangsFor`, shared with the grow-vs-bleed decision
+above, filtered to only ever consider `.manuallyAdjusted` stems: an
+untouched one is always pinned exactly to its source and can only look
+like it overhangs when its lane's gone stale from not being the
+currently-exploded one, which isn't a real bleed). White rather than a
+dim gray at low opacity, which turned out to be effectively invisible
+against a busy waveform — needed enough contrast to read against any
+clip color underneath. `pointer-events: none` throughout, since it's
+purely informational and shouldn't intercept a click meant for the real
+clip it's drawn over.
+
+A stem clip itself has no overlap cap at all (`freeformListFor` returns
+`[]` for `track === "stem"`) — it needs to be draggable past its own
+source's edge into whatever the *next* section's same-instrument stem
+already occupies, and that overhang **is** the bleed effect, not a
+double-booking to reject the way the secondary lane's single slot would.
+
+**Moving the section a bled/grown stem belongs to** preserves the edit
+rather than resetting it or leaving the stem stranded at its old
+absolute position: `.sourcePosAtSync` records each stem's source clip's
+position as of its last sync, and a `.manuallyAdjusted` stem shifts by
+however far its source has moved *since* — the same amount, so "extends
+1.5 bars into the next section" stays true at the new location instead
+of being silently discarded. An untouched stem doesn't need this; it's
+already fully re-pinned to its source's current position every sync.
 
 **A collapsed secondary lane still contributes real audio**, which
 otherwise made it disappear entirely from view -- a thin presence strip
