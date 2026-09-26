@@ -24,6 +24,14 @@
   const FX_SUBLANE_PX = 18; // height of one stacked FX row (matches the original single-row height)
   const FX_LAYER_SWAP_THRESHOLD_PX = 10; // how far a vertical drag on an FX clip has to travel before it's read as "reorder the stack" rather than noise
 
+  // .embedded (set by a snippet in index.html that checks window.self !==
+  // window.top) drops the standalone page's pinned-shell layout in favor
+  // of one natural page height -- see "Mobile embed scrolling" in the
+  // README. Hoisted here (rather than re-checked inline wherever it
+  // matters) since drag auto-scroll below needs it too, not just the
+  // iframe-resize/wheel-relay code at the bottom of this file.
+  const isEmbedded = document.documentElement.classList.contains("embedded");
+
   // Stem paths below are plain relative paths (no leading slash) on purpose:
   // fetch() resolves them against the page's own URL, so the same files
   // load correctly whether this is served from a domain root, a GitHub
@@ -910,6 +918,70 @@
     renderLibrary(); // expandedSongId is untouched -- switching preview mode shouldn't collapse whichever song is open
   });
 
+  // ---------- Auto-scroll during drag ----------
+  // Two distinct edges matter here, fed by one shared rAF loop so both
+  // gestures below (a new chip coming in from the library, or an existing
+  // clip being reordered) get the same behavior for free:
+  //  - scrollArea's own left/right edge (horizontal, both standalone and
+  //    embedded) -- the timeline runs to TOTAL_BARS while only a screen's
+  //    worth is ever visible at once.
+  //  - in embedded mode only, the *parent* page's own top/bottom edge
+  //    (vertical) -- a tall embedded page (see "Mobile embed scrolling" in
+  //    the README) can have the timeline scrolled out of the parent's
+  //    visible viewport while the user is still down in the library,
+  //    mid-drag, trying to reach it.
+  // The iframe has no visibility at all into the parent's own scroll
+  // position or viewport height (cross-origin) -- but the parent both
+  // knows its own window.innerHeight and can measure exactly where this
+  // iframe element sits in its own page via getBoundingClientRect(), so
+  // it only needs the raw pointer Y in iframe-local coordinates handed
+  // over to do that edge math itself. See embed-host.html's test fixture
+  // for the parent-side half of this contract.
+  const DRAG_SCROLL_EDGE_PX = 48;
+  const DRAG_SCROLL_MAX_PX_PER_FRAME = 14;
+  let dragScrollRaf = null;
+  let dragScrollPointer = null; // {x, y} in viewport coords, or null when idle
+  // Optional per-frame callback for a gesture (startClipMove's reorder
+  // branch) whose dragged element's position is computed from the
+  // pointer's *content-space* offset, not just its raw viewport one --
+  // that offset shifts on every frame scrollLeft moves even while the
+  // finger itself holds perfectly still, so it needs re-deriving here on
+  // every tick, not only on an actual pointermove (see applyReorderVisual).
+  let dragScrollOnTick = null;
+
+  function dragScrollSpeed(distancePastThreshold) {
+    return DRAG_SCROLL_MAX_PX_PER_FRAME * Math.min(1, distancePastThreshold / DRAG_SCROLL_EDGE_PX);
+  }
+
+  function dragScrollStep() {
+    if (!dragScrollPointer) { dragScrollRaf = null; return; }
+    const { x, y } = dragScrollPointer;
+    const rect = scrollArea.getBoundingClientRect();
+    if (y >= rect.top && y <= rect.bottom) {
+      if (x < rect.left + DRAG_SCROLL_EDGE_PX) {
+        scrollArea.scrollLeft -= dragScrollSpeed(rect.left + DRAG_SCROLL_EDGE_PX - x);
+      } else if (x > rect.right - DRAG_SCROLL_EDGE_PX) {
+        scrollArea.scrollLeft += dragScrollSpeed(x - (rect.right - DRAG_SCROLL_EDGE_PX));
+      }
+    }
+    if (dragScrollOnTick) dragScrollOnTick(x, y);
+    if (isEmbedded) window.parent.postMessage({ type: "tuttii-embed-drag-scroll", clientY: y }, "*");
+    dragScrollRaf = requestAnimationFrame(dragScrollStep);
+  }
+
+  function updateDragAutoScroll(x, y, onTick) {
+    dragScrollPointer = { x, y };
+    dragScrollOnTick = onTick || null;
+    if (!dragScrollRaf) dragScrollRaf = requestAnimationFrame(dragScrollStep);
+  }
+
+  function stopDragAutoScroll() {
+    if (!dragScrollPointer) return; // wasn't running -- avoid an unpaired "stop" message on every plain tap
+    dragScrollPointer = null;
+    dragScrollOnTick = null;
+    if (isEmbedded) window.parent.postMessage({ type: "tuttii-embed-drag-scroll", clientY: null }, "*");
+  }
+
   // ---------- Drag-and-drop from library into timeline ----------
   // Sections carry no stem type of their own — whichever lane the chip is dropped
   // into (Vocal or Beats) decides which stem gets added. The ghost's color updates
@@ -1006,6 +1078,7 @@
 
       positionGhost(ev.clientX, ev.clientY);
       updateHighlight(ev.clientX, ev.clientY);
+      updateDragAutoScroll(ev.clientX, ev.clientY);
     }
 
     function onUp(ev) {
@@ -1015,6 +1088,7 @@
       document.removeEventListener("pointercancel", onUp);
       document.body.style.touchAction = "";
       clearHighlight();
+      stopDragAutoScroll();
 
       if (dragging) {
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
@@ -1424,9 +1498,44 @@
       if (!decided) { decided = true; isReorder = true; }
     }, CLIP_MOVE_HOLD_MS);
 
+    // Split out from onMove so the auto-scroll rAF loop (see
+    // updateDragAutoScroll) can re-run this on every frame it's active,
+    // not just on an actual pointermove -- while the finger holds still
+    // right at the edge (exactly how you'd trigger continuous auto-scroll
+    // in the first place), no new pointermove event fires at all, so
+    // without this the clip's visual position would freeze the instant
+    // auto-scroll kicked in even as scrollArea kept moving underneath it.
+    function applyReorderVisual(clientX, clientY) {
+      const dxPx = clientX - startX;
+      const dyPx = clientY - startY;
+      // dxPx alone is the finger's raw viewport displacement -- it needs
+      // the scroll that's accumulated since the drag started folded back
+      // in, or the clip drifts out of sync with the finger as soon as
+      // auto-scroll (or the held-still case above) moves scrollArea.
+      const dx = pxToBars(dxPx + (scrollArea.scrollLeft - startScrollLeft));
+      if (Math.abs(dx) > 0.05 || (clip.track === "fx" && Math.abs(dyPx) > FX_LAYER_SWAP_THRESHOLD_PX)) moved = true;
+      liveDx = dx;
+      liveDxPx = dxPx;
+      liveDyPx = dyPx;
+      // Free visual drag only — the real array order (and therefore every
+      // clip's actual position) is untouched until release, so nothing here
+      // can produce a gap or overlap mid-gesture.
+      el.style.left = barsToPx(clip.position + dx) + "px";
+      if (clip.track === "fx") {
+        // Lift the clip vertically with the finger too -- without this,
+        // dragging up/down to restack looked like it silently did
+        // nothing until release, reading as broken rather than as a
+        // real gesture. .layer isn't touched until release (swapFxLayer
+        // there), so fxSlotFor(clip) stays at its pre-drag value for the
+        // whole gesture -- this is just that fixed baseline plus the
+        // raw finger offset, not a live re-preview of the eventual swap.
+        el.style.top = (fxSlotFor(clip) * FX_SUBLANE_PX + 1 + dyPx) + "px";
+        el.style.zIndex = 5; // stay visually on top while passing over whatever it's about to swap with
+      }
+    }
+
     function onMove(ev) {
       const dxPx = ev.clientX - startX;
-      const dyPx = ev.clientY - startY;
       if (!decided) {
         if (Math.abs(dxPx) > CLIP_MOVE_THRESHOLD_PX) {
           decided = true;
@@ -1437,26 +1546,8 @@
         }
       }
       if (isReorder) {
-        const dx = pxToBars(dxPx);
-        if (Math.abs(dx) > 0.05 || (clip.track === "fx" && Math.abs(dyPx) > FX_LAYER_SWAP_THRESHOLD_PX)) moved = true;
-        liveDx = dx;
-        liveDxPx = dxPx;
-        liveDyPx = dyPx;
-        // Free visual drag only — the real array order (and therefore every
-        // clip's actual position) is untouched until release, so nothing here
-        // can produce a gap or overlap mid-gesture.
-        el.style.left = barsToPx(clip.position + dx) + "px";
-        if (clip.track === "fx") {
-          // Lift the clip vertically with the finger too -- without this,
-          // dragging up/down to restack looked like it silently did
-          // nothing until release, reading as broken rather than as a
-          // real gesture. .layer isn't touched until release (swapFxLayer
-          // there), so fxSlotFor(clip) stays at its pre-drag value for the
-          // whole gesture -- this is just that fixed baseline plus the
-          // raw finger offset, not a live re-preview of the eventual swap.
-          el.style.top = (fxSlotFor(clip) * FX_SUBLANE_PX + 1 + dyPx) + "px";
-          el.style.zIndex = 5; // stay visually on top while passing over whatever it's about to swap with
-        }
+        applyReorderVisual(ev.clientX, ev.clientY);
+        updateDragAutoScroll(ev.clientX, ev.clientY, applyReorderVisual);
       } else {
         scrollArea.scrollLeft = startScrollLeft - dxPx;
       }
@@ -1467,6 +1558,7 @@
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
       cancelActiveGesture = null;
+      stopDragAutoScroll();
     }
     function onUp() {
       cleanup();
@@ -3946,7 +4038,7 @@
   // ResizeObserver on the whole document catches song expand/collapse, tab
   // switches, inspector open/close, future songs added -- anything that
   // changes layout -- without needing to hook every call site by hand.
-  if (document.documentElement.classList.contains("embedded")) {
+  if (isEmbedded) {
     let lastReportedHeight = 0;
     function reportEmbedHeight() {
       const h = document.documentElement.scrollHeight;

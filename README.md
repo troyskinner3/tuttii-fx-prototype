@@ -780,6 +780,61 @@ against a number that the cap itself helps determine, feeding back into
 the resize loop above in a way that's needlessly hard to reason about.
 A fixed px has no such dependency.
 
+### Auto-scroll during drag
+
+Two distinct edges matter here, fed by one shared `requestAnimationFrame`
+loop (`updateDragAutoScroll`/`dragScrollStep`) so both drag gestures below
+get the same behavior for free, rather than two separate implementations:
+
+- **`scrollArea`'s own left/right edge** (horizontal — both standalone and
+  embedded). The timeline runs to `TOTAL_BARS` while only a screen's worth
+  is ever visible at once, so dragging a new chip in from the library
+  (`startChipDrag`) or reordering an existing clip (`startClipMove`)
+  toward either edge now nudges `scrollArea.scrollLeft` continuously,
+  scaled by how far past the edge threshold (48px) the pointer sits.
+- **The *parent* page's own top/bottom edge**, embedded mode only
+  (vertical). A tall embedded page (see "Mobile embed scrolling" above)
+  can have the timeline scrolled out of the parent's visible viewport
+  while the user is still down in the library, mid-drag, trying to reach
+  it. The iframe has no visibility at all into the parent's own scroll
+  position or viewport height (cross-origin) — but the parent both knows
+  its own `window.innerHeight` and can measure exactly where the iframe
+  element sits in its own page via `getBoundingClientRect()`, so the
+  iframe only needs to relay the raw pointer Y in its own local
+  coordinates (`tuttii-embed-drag-scroll`, alongside the existing
+  `tuttii-embed-resize`/`tuttii-embed-scroll` messages) and let the parent
+  do that edge math itself.
+
+  The parent-side half of this (see `embed-host.html`'s test fixture, and
+  wherever the real Webflow embed's custom code lives) has one
+  correctness trap worth calling out: a real touchscreen fires no
+  synthetic touchmove just because the page scrolls under a stationary
+  finger, unlike a desktop mouse, where Chrome happens to resync hover
+  state on scroll and so keeps re-delivering fresh `clientY` values for
+  free. Naively recombining a **stale** relayed `clientY` with a *fresh*
+  `iframe.getBoundingClientRect().top` on every animation frame drifts
+  away from the finger's true (unmoving) position as the very scrolling
+  this triggers shifts the iframe underneath it — in practice this made
+  the auto-scroll stall out after a few frames on a touch-driven drag
+  instead of continuing smoothly. The fix is to compute and cache the
+  pointer's *absolute* viewport Y once, at message-arrival time
+  (`iframe.getBoundingClientRect().top + clientY`, snapshotted together),
+  and keep reusing that cached value every frame regardless of whether
+  further messages arrive — it doesn't need refreshing until the finger
+  actually moves and a new real message updates it.
+
+Reordering an existing clip needed one more fix to actually track
+correctly during horizontal auto-scroll: `startClipMove`'s live drag
+preview computes the dragged clip's on-screen position from the pointer's
+raw viewport displacement since the drag started, but auto-scroll can
+move `scrollArea` out from under a stationary finger mid-drag, and — same
+root issue as above — no new `pointermove` fires while the finger holds
+still. `applyReorderVisual` (split out of `onMove` so the auto-scroll loop
+can also call it every frame, not just on an actual pointer move) folds
+the scroll accumulated since the drag started back into the displacement
+calculation, so the clip keeps tracking the finger exactly rather than
+freezing the instant edge-scroll kicks in.
+
 # Tuttii Mini Editor
 
 A browser-based mini music editor prototype — drag stem-agnostic song sections
