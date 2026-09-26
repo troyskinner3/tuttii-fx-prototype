@@ -903,6 +903,20 @@ within bounds. If a wider crossfade is wanted, the fix is to lengthen the
 clips first via their own trim handles, not drag the dot past what
 they've currently got.
 
+**The dot hides behind the sticky row label rather than floating over
+it.** `.xfade-marker` sits at `z-index: 3` -- above `.clip` (1) and
+`.xfade-overlap` (2) so it stays visible/clickable over the hatch, but
+below `.row-label`'s sticky `z-index: 4` (bumped up from 3 to make room)
+so a marker whose seam scrolls under the pinned label column (any seam
+near bar 0, or just panning the timeline) is actually hidden behind it
+instead of floating on top of the label text. First attempt at this used
+`z-index: 2.5` to slot between the old label z-index (3) and the overlap
+(2) without renumbering anything else -- `z-index` only accepts integers,
+though, and a fractional value is invalid CSS that silently falls back to
+`auto`, which lost to `.clip`'s explicit `z-index: 1` in paint order and
+made the dot unclickable everywhere, not just under the label. Integers
+only from here on for anything sharing this stack.
+
 **Data model**: `clip.fadeIn = {bars, offsetBars, prevUid, prevDurAtSet,
 curDurAtSet}`, always stored on the *later* clip of the pair (`bars` is
 the fade's total width; `offsetBars` shifts its center off the nominal

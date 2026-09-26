@@ -266,7 +266,7 @@
   .row-label {
     position: sticky;
     left: 0;
-    z-index: 3;
+    z-index: 4;
     width: var(--label-w);
     flex-shrink: 0;
     display: flex;
@@ -418,7 +418,16 @@
      in main.js) -- sits on top of the two clips it straddles, centered on
      the row like the trim handles, but as its own small draggable circle
      rather than living inside either clip. Idle = hollow ring; .active
-     (clip.fadeIn set) = filled, with a glow and the hatched overlap. */
+     (clip.fadeIn set) = filled, with a glow and the hatched overlap.
+     z-index 3 -- above .clip (1) and .xfade-overlap (2) so the dot stays
+     visible/clickable over the hatch, but below .row-label's sticky 4
+     (bumped up from 3 to make room for this) so a marker that scrolls
+     under the pinned label column (e.g. a seam near bar 0) is actually
+     hidden by it, not floating on top of the label text. z-index only
+     takes integers -- a fractional value between .row-label's old 3 and
+     .xfade-overlap's 2 is invalid CSS and silently falls back to auto,
+     which is what let the marker end up UNDER even a plain .clip (auto
+     loses to any sibling with an explicit z-index in paint order). */
   .xfade-marker {
     position: absolute;
     top: 50%;
@@ -426,7 +435,7 @@
     height: 26px;
     margin-left: -13px;
     transform: translateY(-50%);
-    z-index: 4;
+    z-index: 3;
     display: flex;
     align-items: center;
     justify-content: center;
