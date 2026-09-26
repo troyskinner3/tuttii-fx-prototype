@@ -860,19 +860,48 @@ keeps extending the timeline to meet it instead of stalling.
 
 ### Crossfade at clip boundaries
 
-A small draggable dot sits at every seam between two flush-packed clips
-in the Vocal or Beats lane (`renderCrossfadeMarkers`) — idle by default
-(a hollow ring), so it stays out of the way until used. Press and drag it
-up to lengthen the fade, down to shorten it, left/right to slide the
-transition point off-center (continuous, no bar-grid snap) —
-`startCrossfadeDrag`. A plain tap with no real movement is a no-op peek,
-same tap-vs-drag language every other clip gesture in this app already
-uses. Once a fade is actually set the dot fills solid and a hatched
-overlap region appears spanning both clips, sized to the fade — nothing
-shows at all until a user has actually dragged something, per early
-feedback that showing the overlap unconditionally (as an earlier mockup
-did, defaulting to a nonzero fade) was one visual element too many for an
-untouched seam.
+A small dot sits at every seam between two flush-packed clips in the
+Vocal or Beats lane (`renderCrossfadeMarkers`) — idle by default (a
+hollow ring), so it stays out of the way until used. Once a fade is
+actually set the dot fills solid and a hatched overlap region appears
+spanning both clips, sized to the fade — nothing shows at all until a
+user has actually dragged something, per early feedback that showing the
+overlap unconditionally (as an earlier mockup did, defaulting to a
+nonzero fade) was one visual element too many for an untouched seam.
+
+**Two-step arm-then-drag, not a raw press-drag** (`startCrossfadeDrag`):
+the dot sits at exactly the same spot as both neighboring clips' own trim
+handles, so a first tap only "arms" it (`armedFadeOwnerUid`, tracked
+module-wide) — visually a brighter ring, nothing else — and only a
+*second*, separate press-and-drag while armed actually adjusts anything.
+A mis-aimed handle-grab that happens to land on the dot instead just
+arms-and-does-nothing rather than silently starting a crossfade edit,
+which was a real concern once the dot and the handles turned out to
+genuinely overlap in hit-testing space. Any other gesture starting
+elsewhere — selecting a clip, a move, a trim, a new chip drag from the
+library — disarms it (`disarmCrossfade`, called from `selectClip` and
+`startChipDrag`), and completing a crossfade edit disarms it too, so
+every adjustment needs its own fresh arming tap rather than staying "hot"
+indefinitely. Once armed: drag up to lengthen the fade, down to
+shorten it, left/right to slide the transition point off-center
+(continuous, no bar-grid snap). A plain tap with no real movement while
+armed just disarms without changing anything.
+
+**The overlap can never reach past either clip's own current length.**
+Early feedback (a screenshot of the two independent per-drag clamps —
+total fade width and center offset — combining to let the overlap spill
+out past a clip's own edge, reading as a stray hatch mark sitting inside
+one clip rather than a boundary crossfade) meant the clamp needed
+coordinating properly: `onMove` now derives `preBars`/`postBars`
+directly from the raw drag deltas and clamps *each side independently*
+against that side's own clip length (`Math.min(preBars, prev.duration)`,
+`Math.min(postBars, clip.duration)`), then re-derives `liveFadeBars`/
+`liveOffsetBars` from the clamped pair — capping only the *total* width
+would still let a big enough offset push nearly all of it onto one side
+and overshoot that clip's own length even while "on average" looking
+within bounds. If a wider crossfade is wanted, the fix is to lengthen the
+clips first via their own trim handles, not drag the dot past what
+they've currently got.
 
 **Data model**: `clip.fadeIn = {bars, offsetBars, prevUid, prevDurAtSet,
 curDurAtSet}`, always stored on the *later* clip of the pair (`bars` is

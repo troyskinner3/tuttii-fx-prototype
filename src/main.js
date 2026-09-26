@@ -329,6 +329,15 @@
   let clips = { vocal: [], beats: [], vocal2: [], beats2: [], fx: [], stem: [], deletedStems: [] };
   let uidCounter = 1;
   let selectedUid = null;
+  // Which crossfade marker (by the uid of the clip that owns its
+  // clip.fadeIn) is currently "armed" -- see startCrossfadeDrag. A
+  // crossfade dot sits exactly where two clips' own trim handles also
+  // are, so the first tap only arms it (visually, nothing else) and an
+  // actual drag needs a second, separate press while armed; any other
+  // gesture starting elsewhere (selecting a clip, a move, a trim, a new
+  // chip drag) disarms it, so a mis-aimed handle-drag never gets
+  // swallowed by the dot sitting on top of it.
+  let armedFadeOwnerUid = null;
   // Accordion state for the secondary lanes -- view-only, not part of
   // undo/redo (like which library tab is open).
   let vocalExpanded = false;
@@ -1041,6 +1050,7 @@
   // into (Vocal or Beats) decides which stem gets added. The ghost's color updates
   // live as you drag over each lane, previewing which stem you're about to place.
   function startChipDrag(e, sec, songName, chipEl, mode) {
+    disarmCrossfade();
     const startX = e.clientX, startY = e.clientY;
     const pointerId = e.pointerId;
     let dragging = false;
@@ -1528,18 +1538,27 @@
   }
 
   // ---------- Crossfade at clip boundaries (Vocal/Beats only) ----------
-  // One draggable dot per adjacent pair in a flush-packed lane -- press
-  // and drag it up/down to resize the fade, left/right to slide the
-  // transition point (continuous, no bar-grid snap); a plain tap (no real
-  // movement) is a no-op peek, same tap-vs-drag language every other clip
-  // gesture in this app already uses. Idle (no clip.fadeIn) renders as a
+  // One dot per adjacent pair in a flush-packed lane, sitting exactly
+  // where both neighbors' own trim handles also are -- so a raw
+  // press-and-drag on it is a two-step gesture, not one: the first tap
+  // only "arms" it (armedFadeOwnerUid, tracked module-wide so any other
+  // gesture starting elsewhere -- selectClip, a new chip drag -- disarms
+  // it via disarmCrossfade), and only a second, separate press-and-drag
+  // while armed actually adjusts the fade. A mis-aimed handle-grab that
+  // lands on the dot instead just arms-and-does-nothing rather than
+  // silently starting a crossfade edit. Once armed: drag up/down to
+  // resize the fade, left/right to slide the transition point off-center
+  // (continuous, no bar-grid snap); a plain tap with no real movement
+  // disarms without changing anything. Idle (no clip.fadeIn) renders as a
   // small hollow ring; once a fade is set it fills solid and a hatched
-  // overlap region spans both clips, sized to the fade. The data
-  // (clip.fadeIn = {bars, offsetBars, prevUid, prevDurAtSet, curDurAtSet})
-  // always lives on the LATER clip of the pair -- see layout()'s
-  // invalidateStaleCrossfades for how moving/trimming/reordering either
-  // side clears it, and crossfadeExtentsFor for how it drives the actual
-  // audio scheduling.
+  // overlap region spans both clips, sized to the fade -- clamped so it
+  // can never reach past either clip's own current length (drag a clip's
+  // own trim handle first for more room, rather than the fade silently
+  // spilling past a section's boundary). The data (clip.fadeIn =
+  // {bars, offsetBars, prevUid, prevDurAtSet, curDurAtSet}) always lives
+  // on the LATER clip of the pair -- see layout()'s invalidateStaleCrossfades
+  // for how moving/trimming/reordering either side clears it, and
+  // crossfadeExtentsFor for how it drives the actual audio scheduling.
   function renderCrossfadeMarkers(lane, list) {
     for (let i = 0; i < list.length - 1; i++) {
       const prev = list[i], clip = list[i + 1];
@@ -1549,11 +1568,11 @@
       const seamBar = clip.position + (fi ? fi.offsetBars : 0);
 
       const marker = document.createElement("div");
-      marker.className = "xfade-marker" + (active ? " active" : "");
+      marker.className = "xfade-marker" + (active ? " active" : "") + (armedFadeOwnerUid === clip.uid ? " armed" : "");
       marker.style.left = barsToPx(seamBar) + "px";
       marker.dataset.owner = clip.uid;
       marker.innerHTML = '<div class="xfade-dot"></div>';
-      marker.addEventListener("pointerdown", (e) => startCrossfadeDrag(e, list, i, marker));
+      marker.addEventListener("pointerdown", (e) => startCrossfadeDrag(e, prev, clip, marker));
       lane.appendChild(marker);
 
       if (active) {
@@ -1568,7 +1587,18 @@
     }
   }
 
-  function startCrossfadeDrag(e, list, i, markerEl) {
+  function startCrossfadeDrag(e, prev, clip, markerEl) {
+    if (armedFadeOwnerUid !== clip.uid) {
+      // First touch on an unarmed dot: just arm it, nothing else --
+      // see the block comment above renderCrossfadeMarkers for why.
+      e.preventDefault();
+      e.stopPropagation();
+      disarmCrossfade();
+      armedFadeOwnerUid = clip.uid;
+      markerEl.classList.add("armed");
+      return;
+    }
+
     e.preventDefault();
     e.stopPropagation(); // don't also let this land on the clip body underneath and start a clip move
     // Document-level listeners rather than setPointerCapture on the marker
@@ -1579,17 +1609,10 @@
     // pattern elsewhere in this file (startChipDrag's ghost) is to just
     // never depend on that for an element that's actively repositioning.
     const pointerId = e.pointerId;
-    const prev = list[i], clip = list[i + 1];
     const fi0 = clip.fadeIn;
     const startFadeBars = fi0 ? fi0.bars : 0;
     const startOffsetBars = fi0 ? fi0.offsetBars : 0;
     const startX = e.clientX, startY = e.clientY;
-    // Can't exceed most of either clip's own length (nothing left over to
-    // otherwise sound like their normal, un-faded selves), and the
-    // transition point can only slide so far off-center before it isn't
-    // meaningfully "the boundary between these two clips" anymore.
-    const maxFadeBars = 2 * Math.min(prev.duration, clip.duration) * 0.9;
-    const maxOffsetBars = Math.min(prev.duration, clip.duration) * 0.4;
     let moved = false;
     let liveFadeBars = startFadeBars, liveOffsetBars = startOffsetBars;
 
@@ -1618,10 +1641,23 @@
       ev.preventDefault();
       const dx = ev.clientX - startX, dy = ev.clientY - startY;
       if (!moved && (Math.abs(dx) > CLIP_MOVE_THRESHOLD_PX || Math.abs(dy) > CLIP_MOVE_THRESHOLD_PX)) moved = true;
-      // Up = longer, down = shorter -- 40px of vertical travel per bar,
-      // same feel as the mockup this was reviewed against.
-      liveFadeBars = Math.max(0, Math.min(maxFadeBars, startFadeBars - dy / 40));
-      liveOffsetBars = Math.max(-maxOffsetBars, Math.min(maxOffsetBars, startOffsetBars + pxToBars(dx)));
+      // Up = longer, down = shorter; left/right slides the balance
+      // between the two sides -- 40px of vertical travel per bar, same
+      // feel as the mockup this was reviewed against. preBars/postBars
+      // are then each independently capped at that side's own clip
+      // length -- the overlap can never reach past either clip's own
+      // current boundary, only up to it, however far fadeBars/offsetBars
+      // alone would otherwise push it. (Two independent per-side caps
+      // rather than one combined max: capping only the total would still
+      // let a big enough offset push nearly all of it onto one side and
+      // overshoot that clip's own length even while "on average" looking
+      // within bounds.)
+      const rawFadeBars = Math.max(0, startFadeBars - dy / 40);
+      const rawOffsetBars = startOffsetBars + pxToBars(dx);
+      const preBars = Math.min(Math.max(0, rawFadeBars / 2 - rawOffsetBars), prev.duration);
+      const postBars = Math.min(Math.max(0, rawFadeBars / 2 + rawOffsetBars), clip.duration);
+      liveFadeBars = preBars + postBars;
+      liveOffsetBars = (postBars - preBars) / 2;
       updatePreview();
     }
     function cleanup() {
@@ -1633,7 +1669,8 @@
     function onUp(ev) {
       if (ev.pointerId !== pointerId) return;
       cleanup();
-      if (!moved) { renderClips(); return; } // plain tap -- no-op peek; re-render just drops the ad-hoc overlap element made above if it was never actually dragged into existence
+      disarmCrossfade();
+      if (!moved) { renderClips(); return; } // tap-while-armed with no real movement -- disarm and drop the ad-hoc overlap element made above if it was never actually dragged into existence
       if (liveFadeBars > 0.02) {
         clip.fadeIn = {
           bars: liveFadeBars,
@@ -1654,7 +1691,7 @@
     document.addEventListener("pointermove", onMove, { passive: false });
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
-    cancelActiveGesture = () => { cleanup(); renderClips(); };
+    cancelActiveGesture = () => { cleanup(); disarmCrossfade(); renderClips(); };
   }
 
   // Reordering and scrolling are both horizontal gestures on a clip, so
@@ -1990,10 +2027,17 @@
   }
 
   function selectClip(uid) {
+    disarmCrossfade(); // any other clip interaction starting elsewhere cancels an armed-but-untouched crossfade dot
     selectedUid = uid;
     document.querySelectorAll(".clip").forEach(el => {
       el.classList.toggle("selected", Number(el.dataset.uid) === uid);
     });
+  }
+
+  function disarmCrossfade() {
+    if (armedFadeOwnerUid == null) return;
+    armedFadeOwnerUid = null;
+    document.querySelectorAll(".xfade-marker.armed").forEach(el => el.classList.remove("armed"));
   }
 
   // Opens the inspector panel — only called from a deliberate tap on an

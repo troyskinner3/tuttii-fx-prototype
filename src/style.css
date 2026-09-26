@@ -449,6 +449,15 @@
     border-color: var(--violet);
     box-shadow: 0 0 0 4px rgba(160,85,213,0.25);
   }
+  /* Armed = the dot sits right where both neighbors' own trim handles
+     are, so a first tap only arms it (see startCrossfadeDrag) -- this is
+     the "now go ahead and drag me" cue for the second, deliberate press
+     that follows, clearly distinct from plain idle/active either way. */
+  .xfade-marker.armed .xfade-dot {
+    border-color: var(--text);
+    box-shadow: 0 0 0 5px rgba(160,85,213,0.45), 0 0 10px rgba(160,85,213,0.7);
+    transform: scale(1.15);
+  }
   .xfade-overlap {
     position: absolute;
     top: 4px; bottom: 4px;
