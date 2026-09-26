@@ -369,6 +369,40 @@
       // this one -- so bit-depth reduction alone for now.
       kind: "bitcrush", bitDepth: 4, fromWet: 0, toWet: 1,
       params: [{ key: "bitDepth", label: "Bit Depth", unit: "bit", min: 1, max: 16, step: 1 }] },
+    { id: "vinylbrake", label: "Vinyl Brake", icon: "💿", durationsBars: [2, 4, 8, 16],
+      // The classic real-time "tape stop" trick: ramping a DelayNode's
+      // delayTime forces WebAudio to resample the signal to keep up,
+      // which reads as a pitch drop -- paired with a darkening lowpass and
+      // a volume fade so it sells the "record grinding to a halt" image.
+      // Deliberately doesn't touch the real Vocal/Beats clip's own
+      // playback rate at all: the song stays on tempo underneath, this
+      // just colors the FX layer's copy of the signal passing through it.
+      // No dry/wet split like Phaser/Washout/etc -- there's nothing to
+      // blend against, the chain itself is silent-until-curved (near-zero
+      // delay, wide-open filter, full gain at brake amount 0).
+      kind: "vinylbrake", fromWet: 0, toWet: 1,
+      maxDelaySec: 0.35, minHz: 700, minGain: 0.2 },
+    { id: "reverse-swell", label: "Reverse Swell", icon: "🚀", durationsBars: [2, 4, 8, 16],
+      // A real reversed-audio swell would need a reference to whichever
+      // real Vocal/Beats clip(s) happen to sit underneath this FX clip --
+      // zero, one, or several, depending on layering -- which FX units
+      // have no way to know about today. So this is a synthesized
+      // riser instead: filtered noise whose bandpass center sweeps upward
+      // as it fades in, the standard EDM buildup texture. Same idea
+      // Washout already uses for its synthetic reverb wash, just a sweep
+      // instead of a wide "opening up" is the same shape (schedulePhaserSweep
+      // for the dry/wet, scheduleFxSweep for the filter).
+      kind: "reverse-swell", fromHz: 150, toHz: 9000, fromWet: 0, toWet: 1 },
+    { id: "ringmod", label: "Ring Mod", icon: "🤖", durationsBars: [2, 4, 8, 16],
+      // Architecturally almost identical to Tremolo -- an oscillator
+      // driving a gain node -- just at audio-rate frequency instead of a
+      // sub-20Hz LFO, and bipolar (swinging the full -1..1, not just
+      // 0..1) so it actually multiplies in new sum/difference frequencies
+      // rather than merely scaling volume. That's what gives ring
+      // modulation its metallic/robotic character instead of Tremolo's
+      // simple pulsing.
+      kind: "ringmod", carrierHz: 250, fromWet: 0, toWet: 1,
+      params: [{ key: "carrierHz", label: "Frequency", unit: "Hz", min: 20, max: 2000, step: 5 }] },
   ];
   function fxEffectFor(effectId) { return FX_EFFECTS.find(e => e.id === effectId); }
   // A clip only ever gets a `params` object once a user actually moves a
@@ -2783,6 +2817,24 @@
     return buf;
   }
 
+  // A longer looped noise bed for Reverse Swell's synthesized riser --
+  // unlike noiseBuffer() above (a short, decaying percussive burst) this
+  // one is flat and loops seamlessly for as long as an FX clip needs it;
+  // a bandpass filter sweeping across it (see buildFxUnit's "reverse-swell"
+  // branch) is what actually shapes it into a riser, so the raw buffer
+  // itself doesn't need its own envelope. A small seam at the loop point
+  // is inaudible in broadband noise, so no crossfading it needed.
+  let longNoiseBufferCache = null;
+  function longNoiseBuffer(ctx) {
+    if (longNoiseBufferCache && longNoiseBufferCache.ctx === ctx) return longNoiseBufferCache.buf;
+    const len = Math.floor(ctx.sampleRate * 3);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    longNoiseBufferCache = { ctx, buf };
+    return buf;
+  }
+
   // Synthetic reverb impulse response (no IR audio asset to load): stereo
   // white noise shaped with an exponential decay envelope, same idea as
   // noiseBuffer() above but longer and decaying rather than a short
@@ -3177,6 +3229,99 @@
 
       input.connect(dryGain).connect(output);
       input.connect(shaper).connect(wetGain).connect(output);
+
+      return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
+    }
+    if (cfg.kind === "vinylbrake") {
+      // input -> delay (ramping time forces a real-time pitch drop) ->
+      //   lowpass (darkens as brake amount rises) -> gain (fades down) ->
+      //   output. All three driven off one shared 0..1 "brake amount"
+      // envelope (fxDepthEnvelope, same helper Tremolo/Auto-Pan use for
+      // their depth), so there's a single curve to reason about even
+      // though it's shaping three different params in series.
+      const delay = track(ctx.createDelay(1));
+      delay.delayTime.value = 0.002;
+      const filter = track(ctx.createBiquadFilter());
+      filter.type = "lowpass";
+      filter.frequency.value = 20000;
+      const gain = track(ctx.createGain());
+      gain.gain.value = 1;
+      delay.connect(filter).connect(gain);
+
+      return {
+        clip, input: delay, output: gain,
+        automate: (at, offset) => {
+          fxDepthEnvelope(clip, cfg, offset).forEach(({ tSec, depth }, i) => {
+            const atTime = at + (tSec - offset);
+            const method = i === 0 ? "setValueAtTime" : "linearRampToValueAtTime";
+            delay.delayTime[method](0.002 + depth * cfg.maxDelaySec, atTime);
+            filter.frequency[method](20000 - depth * (20000 - cfg.minHz), atTime);
+            gain.gain[method](1 - depth * (1 - cfg.minGain), atTime);
+          });
+        },
+      };
+    }
+    if (cfg.kind === "reverse-swell") {
+      // input -> dryGain ------------------------------------\
+      // (independent) noise -> bandpass (sweeping up) -> wetGain --+--> output
+      // The wet path is a synthesized texture, not a processed copy of
+      // the input -- there's no real clip reference to reverse here (see
+      // the FX_EFFECTS comment above) -- so the noise source runs on its
+      // own, always-on loop, and only the dry/wet balance and the
+      // bandpass sweep are curve-automated. Exactly Washout's own
+      // schedulePhaserSweep + scheduleFxSweep pairing.
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      input.connect(dryGain).connect(output);
+
+      const noise = track(ctx.createBufferSource());
+      noise.buffer = longNoiseBuffer(ctx);
+      noise.loop = true;
+      const filter = track(ctx.createBiquadFilter());
+      filter.type = "bandpass";
+      filter.Q.value = 1.2;
+      filter.frequency.value = cfg.fromHz;
+      noise.connect(filter).connect(wetGain).connect(output);
+      noise.start();
+
+      return {
+        clip, input, output,
+        automate: (at, offset) => {
+          schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset);
+          scheduleFxSweep(filter, cfg, clip, at, offset || 0);
+        },
+      };
+    }
+    if (cfg.kind === "ringmod") {
+      // input -> dryGain -----------------------------------------\
+      //       -> ringGain (gain param driven directly, at audio rate, by
+      //          a bipolar carrier oscillator) -> wetGain ----------+--> output
+      // Multiplying the signal by a carrier that swings the full -1..1
+      // range (rather than Tremolo's unipolar 0..1 LFO) is what actually
+      // produces ring modulation's new sum/difference frequencies instead
+      // of a plain volume pulse -- so ringGain's base gain stays at 0 and
+      // the carrier alone drives it. Same dry/wet crossfade shape as
+      // Phaser/Washout/Echo/Bitcrusher.
+      const input = track(ctx.createGain());
+      const output = track(ctx.createGain());
+      const dryGain = track(ctx.createGain());
+      const wetGain = track(ctx.createGain());
+      dryGain.gain.value = 1;
+      wetGain.gain.value = 0;
+      const ringGain = track(ctx.createGain());
+      ringGain.gain.value = 0;
+      const carrier = track(ctx.createOscillator());
+      carrier.type = "sine";
+      carrier.frequency.value = fxParamValue(clip, cfg, "carrierHz");
+      carrier.connect(ringGain.gain);
+      carrier.start();
+
+      input.connect(dryGain).connect(output);
+      input.connect(ringGain).connect(wetGain).connect(output);
 
       return { clip, input, output, automate: (at, offset) => schedulePhaserSweep(dryGain, wetGain, cfg, clip, at, offset) };
     }

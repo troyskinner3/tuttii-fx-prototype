@@ -67,7 +67,17 @@ stops every node the previous live-context run built, called both from
 accumulates across repeated play/pause cycles. (Not needed for exports —
 each one gets its own throwaway `OfflineAudioContext`.)
 
-Eight effect types exist so far:
+Every path from the Vocal/Beats mix (or the FX chain, when one exists) to
+the real destination also passes through one always-on `DynamicsCompressorNode`
+acting as a gentle master limiter (threshold -3dB, ratio 20:1, 1ms attack) —
+added once secondary lanes and stacked FX layers meant genuinely simultaneous
+real audio could actually clip. There's no real decision for a user to make
+about it (nothing to trade off, no reason it'd ever want to be off), so it
+isn't exposed anywhere in the UI: `buildFxChain` just wires it in as the last
+node before `ctx.destination`/the offline destination, in both live playback
+and export.
+
+Eleven effect types exist so far:
 
 - **High Pass** (2/4/8/16-bar variants): cutoff sweeps from 20Hz
   (neutral) up to 15kHz (peak — kept short of the full 20kHz, which cut
@@ -151,6 +161,42 @@ Eight effect types exist so far:
   reduction (the other classic bitcrusher knob, which needs a custom
   `AudioWorkletProcessor` since Web Audio has no built-in downsampler)
   isn't built yet.
+- **Vinyl Brake** (2/4/8/16-bar variants): the classic real-time "tape
+  stop" trick — ramping a `DelayNode`'s `delayTime` forces Web Audio to
+  resample the signal to keep up, which reads as a pitch drop, no
+  playback-rate manipulation involved. Paired with a lowpass that darkens
+  from 20kHz down to 700Hz and a gain fade down to 0.2, all three driven
+  off one shared 0..1 "brake amount" envelope (`fxDepthEnvelope`, the same
+  helper Tremolo/Auto-Pan use) so there's a single curve to reason about
+  even though it's shaping three params in series. Deliberately doesn't
+  touch the real Vocal/Beats clip's own playback rate at all — the song
+  stays on tempo underneath; this only colors the FX layer's copy of the
+  signal passing through it, matching the "steady tempo, you hear the
+  sound effect during the section" behavior asked for over the
+  alternative (actually stretching the section's duration). No dry/wet
+  split like the crossfaded effects above — there's nothing to blend
+  against, the chain itself is inaudible at brake amount 0 (near-zero
+  delay, wide-open filter, full gain).
+- **Reverse Swell** (2/4/8/16-bar variants): FX units have no reference to
+  which real Vocal/Beats clip(s), if any, happen to sit underneath them at
+  a given moment — zero, one, or several depending on layering — so a
+  literal "play the underlying song backwards" effect isn't buildable
+  today. Built instead as a synthesized riser: a 3-second looped white
+  noise bed (`longNoiseBuffer`) through a bandpass filter whose center
+  sweeps from 150Hz up to 9kHz, crossfaded in — the standard EDM buildup
+  texture. Reuses Washout's exact pairing of scheduling functions
+  unmodified (`schedulePhaserSweep` for the dry/wet, `scheduleFxSweep` for
+  the filter sweep), same precedent as Washout's own synthetic impulse
+  response standing in for a real reverb IR.
+- **Ring Mod** (2/4/8/16-bar variants): architecturally almost identical
+  to Tremolo — an oscillator driving a gain node — but bipolar (swinging
+  the full -1..1 range via a `GainNode` whose base gain stays at 0 and is
+  driven entirely by the carrier) and at audio-rate frequency (20Hz–2kHz,
+  a per-clip "Frequency" slider, default 250Hz) rather than Tremolo's
+  sub-20Hz LFO. Multiplying by a bipolar carrier rather than a unipolar
+  one is what actually produces ring modulation's metallic/robotic new
+  sum/difference frequencies instead of Tremolo's plain volume pulse.
+  Crossfaded against the dry signal the same way as Phaser/Washout/Echo/Bitcrusher.
 
 The stacking/layering system this all runs on (`.layer`, `fxSlotFor`,
 `allocateTopFxLayer`, `swapFxLayer`, the vertical-drag gesture) is
