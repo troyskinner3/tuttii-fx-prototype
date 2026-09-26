@@ -3212,10 +3212,28 @@
     if (isLive) teardownLiveFxChain();
     const track = isLive ? (n => { liveFxChainNodes.push(n); return n; }) : (n => n);
 
+    // A gentle, always-on limiter sitting between everything and the
+    // speakers -- secondary lanes and layered FX can now genuinely stack
+    // simultaneous real audio, and this exists purely to catch the
+    // resulting peaks before they clip. Not exposed anywhere in the UI;
+    // there's no real decision for a user to make about it, so it isn't
+    // one. Every path to ctx.destination goes through it -- entries.
+    // masterInput below is what callers connect the Vocal/Beats mix into,
+    // resolving to either the first FX unit's input or straight to this
+    // limiter when there's no FX chain at all.
+    const limiter = track(ctx.createDynamicsCompressor());
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.1;
+    limiter.connect(ctx.destination);
+
     const sorted = [...clips.fx].sort((a, b) => a.layer - b.layer);
     const entries = sorted.map(clip => buildFxUnit(ctx, clip, track));
     for (let i = 0; i < entries.length - 1; i++) entries[i].output.connect(entries[i + 1].input);
-    if (entries.length) entries[entries.length - 1].output.connect(ctx.destination);
+    if (entries.length) entries[entries.length - 1].output.connect(limiter);
+    entries.masterInput = entries.length ? entries[0].input : limiter;
     return entries;
   }
 
@@ -3526,7 +3544,7 @@
     // Fresh node per FX clip every play() call -- nothing to reset between
     // runs, unlike the old single shared filter.
     const fxChain = buildFxChain(ctx);
-    const mixDest = fxChain.length ? fxChain[0].input : ctx.destination;
+    const mixDest = fxChain.masterInput;
 
     [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
@@ -3605,7 +3623,7 @@
     const sampleRate = 44100;
     const offline = new OfflineAudioContext(2, Math.ceil((endSec + 0.5) * sampleRate), sampleRate);
     const fxChain = buildFxChain(offline);
-    const mixDest = fxChain.length ? fxChain[0].input : offline.destination;
+    const mixDest = fxChain.masterInput;
 
     [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
       scheduleClip(offline, mixDest, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
