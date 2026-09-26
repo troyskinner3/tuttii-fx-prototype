@@ -835,6 +835,86 @@ the scroll accumulated since the drag started back into the displacement
 calculation, so the clip keeps tracking the finger exactly rather than
 freezing the instant edge-scroll kicks in.
 
+### Timeline length grows to fit the content
+
+`TOTAL_BARS` used to be a fixed 32-bar constant — the grid, the scrub
+ruler, and `scrollArea`'s own scrollable width were all derived from it,
+so once a user's arrangement actually reached bar 32 the timeline just
+hard-stopped: no more grid, nothing further to scroll into, no way to
+place anything past it. That's now a `let`, grown (never shrunk, same as
+any DAW's timeline length) by `growTimelineToFit(timelineEndBars())` —
+called from `renderClips()`, so every committed change (a drop, a
+duplicate, a trim past the old end) just keeps extending the timeline to
+cover it, with a fixed 8-bar padding past whatever the actual content
+reaches.
+
+That alone isn't quite enough once auto-scroll-during-drag (above) is in
+the picture, though: a live-previewed reorder never calls `renderClips()`
+mid-gesture, so pushing a drag against the timeline's current right edge
+would still dead-end the instant `scrollArea` ran out of width to scroll
+into, even though the *content* driving that drag hasn't committed yet.
+`dragScrollStep`'s right-edge branch checks for exactly that (`scrollLeft`
+already at `scrollWidth - clientWidth`) and grows the timeline live, right
+before nudging `scrollLeft` further, so a held drag against the edge just
+keeps extending the timeline to meet it instead of stalling.
+
+### Crossfade at clip boundaries
+
+A small draggable dot sits at every seam between two flush-packed clips
+in the Vocal or Beats lane (`renderCrossfadeMarkers`) — idle by default
+(a hollow ring), so it stays out of the way until used. Press and drag it
+up to lengthen the fade, down to shorten it, left/right to slide the
+transition point off-center (continuous, no bar-grid snap) —
+`startCrossfadeDrag`. A plain tap with no real movement is a no-op peek,
+same tap-vs-drag language every other clip gesture in this app already
+uses. Once a fade is actually set the dot fills solid and a hatched
+overlap region appears spanning both clips, sized to the fade — nothing
+shows at all until a user has actually dragged something, per early
+feedback that showing the overlap unconditionally (as an earlier mockup
+did, defaulting to a nonzero fade) was one visual element too many for an
+untouched seam.
+
+**Data model**: `clip.fadeIn = {bars, offsetBars, prevUid, prevDurAtSet,
+curDurAtSet}`, always stored on the *later* clip of the pair (`bars` is
+the fade's total width; `offsetBars` shifts its center off the nominal
+seam). The three snapshot fields exist purely for invalidation — `layout()`
+now calls `invalidateStaleCrossfades()` after every reflow (the one
+function every mutation — trim, reorder, insert, delete — already funnels
+through), which deletes a clip's `fadeIn` the moment its immediate
+predecessor's identity or either clip's duration no longer matches what
+it was set against. This is what implements "move either clip and the
+crossfade resets" without needing to hunt down every call site that could
+invalidate one.
+
+**Audio**: a real crossfade needs genuine time-overlap — both clips
+audibly sounding at once during the transition, ducking one down while
+the other ramps up — which means the pre-existing flush (non-overlapping)
+`clip.position`/`.duration` model can't be it directly. `crossfadeExtentsFor`
+computes, per clip, how far its *actual* scheduled audio needs to reach
+before/after its own nominal bounds to cover an active fade on either
+side; `scheduleClipWithFade` wraps the existing `scheduleClip` (real
+buffer-backed or synthesized, unchanged either way) in one extra gain
+node carrying the fade's ramp, so every clip kind gets it for free.
+`scheduleLaneWithCrossfades` replaces the plain per-clip loop for
+Vocal/Beats specifically in both `playScheduled` and `renderArrangement`
+(export) — the freeform secondary lanes never flush-pack, so they have no
+shared seam to fade across and stay on the old path. A real song's
+buffer-backed clip additionally needed one defensive clamp in
+`scheduleRealClip` (a large pre-roll fade can ask to read earlier than
+the buffer actually has, which `AudioBufferSourceNode.start()` rejects
+outright with a negative offset) — clamped to the buffer's start with the
+missing pre-roll simply lost, rather than erroring.
+
+Known simplification: the fade width is capped at build time (90% of the
+smaller clip's own length) and the offset can push one side of a very
+skewed fade down toward zero pre/post-roll, but there's no *live*
+reconciliation against a real song's actual remaining buffer margin while
+dragging — only the defensive clamp above, applied at schedule time. In
+practice this only bites when a clip is trimmed right up against the
+absolute start/end of its source song's buffer while also carrying a
+generous fade; harmless (a slightly shorter fade than requested) rather
+than broken.
+
 # Tuttii Mini Editor
 
 A browser-based mini music editor prototype — drag stem-agnostic song sections

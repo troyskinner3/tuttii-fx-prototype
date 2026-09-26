@@ -414,6 +414,52 @@
   .clip.beats .clip-wave span { background: rgba(232,75,198,0.85); }
   .clip-wave span { width: 2px; flex-shrink: 0; border-radius: 1px; }
 
+  /* Crossfade marker + overlap (see renderCrossfadeMarkers/startCrossfadeDrag
+     in main.js) -- sits on top of the two clips it straddles, centered on
+     the row like the trim handles, but as its own small draggable circle
+     rather than living inside either clip. Idle = hollow ring; .active
+     (clip.fadeIn set) = filled, with a glow and the hatched overlap. */
+  .xfade-marker {
+    position: absolute;
+    top: 50%;
+    width: 26px;
+    height: 26px;
+    margin-left: -13px;
+    transform: translateY(-50%);
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+  }
+  .xfade-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid rgba(160,85,213,0.55);
+    background: transparent;
+    transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .xfade-marker.active .xfade-dot {
+    background: var(--violet);
+    border-color: var(--violet);
+    box-shadow: 0 0 0 4px rgba(160,85,213,0.25);
+  }
+  .xfade-overlap {
+    position: absolute;
+    top: 4px; bottom: 4px;
+    border-radius: 3px;
+    background: repeating-linear-gradient(45deg, rgba(160,85,213,0.28), rgba(160,85,213,0.28) 5px, rgba(160,85,213,0.08) 5px, rgba(160,85,213,0.08) 10px);
+    border-left: 1px solid rgba(160,85,213,0.75);
+    border-right: 1px solid rgba(160,85,213,0.75);
+    pointer-events: none;
+    z-index: 2;
+  }
+
   .handle {
     position: absolute;
     top: 0; bottom: 0;

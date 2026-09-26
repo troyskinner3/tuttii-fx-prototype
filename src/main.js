@@ -18,7 +18,15 @@
   // visible without zooming at all; pinching in still goes up to
   // MAX_BAR_PX, and back out only as far as this same floor.
   let BAR_PX = MIN_BAR_PX;
-  const TOTAL_BARS = 32;
+  // Starting length, and the floor it never shrinks below -- but NOT a cap.
+  // The timeline grows to keep covering whatever's actually on it (see
+  // growTimelineToFit/growTimelineIfScrollMaxed below) rather than hard-
+  // stopping once a user stacks past the original 32 bars, which is what
+  // it used to do (the grid, and the scrollable area itself, both derive
+  // their width from this). Growth is monotonic -- deleting clips doesn't
+  // shrink it back, same as any DAW's timeline length.
+  let TOTAL_BARS = 32;
+  const TIMELINE_GROW_PADDING_BARS = 8; // room left past the furthest content/drag point after a growth step
   const MIN_DUR_BARS = 1;
   const MAX_FX_LAYERS = 4; // arbitrary cap on how many FX clips can stack at once, for v1
   const FX_SUBLANE_PX = 18; // height of one stacked FX row (matches the original single-row height)
@@ -52,6 +60,27 @@
   function layout(type) {
     let pos = 0;
     clips[type].forEach(c => { c.position = pos; pos += c.duration; });
+    if (type === "vocal" || type === "beats") invalidateStaleCrossfades(type);
+  }
+
+  // A crossfade (clip.fadeIn, see "Crossfade at clip boundaries" below)
+  // only makes sense for the exact adjacent pair and durations it was
+  // dragged against — move either clip, insert/delete/reorder around it,
+  // or trim either one's length, and the seam it was drawn on no longer
+  // means the same thing. Rather than hunting down every mutation site
+  // that could invalidate one, this runs after every layout() call (the
+  // one function every such mutation already funnels through) and clears
+  // any fadeIn whose snapshot no longer matches current reality.
+  function invalidateStaleCrossfades(type) {
+    const list = clips[type];
+    list.forEach((clip, i) => {
+      const fi = clip.fadeIn;
+      if (!fi) return;
+      const prev = list[i - 1];
+      if (!prev || prev.uid !== fi.prevUid || prev.duration !== fi.prevDurAtSet || clip.duration !== fi.curDurAtSet) {
+        delete clip.fadeIn;
+      }
+    });
   }
 
   // FX clips don't use layout() -- unlike Vocal/Beats, they're positioned
@@ -600,6 +629,20 @@
   }
   buildTimelineGrid();
 
+  // Grows TOTAL_BARS (and rebuilds the grid at the new width) if the
+  // timeline's actual content has reached further than it currently
+  // covers -- called from renderClips() after every committed change, so
+  // dropping, duplicating, or extending a clip past the current end just
+  // keeps extending the timeline rather than clipping/hiding it. Never
+  // shrinks (see TOTAL_BARS' own comment).
+  function growTimelineToFit(rawEndBars) {
+    const needed = Math.ceil(rawEndBars) + TIMELINE_GROW_PADDING_BARS;
+    if (needed > TOTAL_BARS) {
+      TOTAL_BARS = needed;
+      buildTimelineGrid();
+    }
+  }
+
   // ---------- Pinch-to-zoom (mobile timeline only) ----------
   // Mouse/pen pointers never enter this at all (gated on pointerType
   // "touch" below), so desktop is completely unaffected. Scoped to
@@ -961,6 +1004,17 @@
       if (x < rect.left + DRAG_SCROLL_EDGE_PX) {
         scrollArea.scrollLeft -= dragScrollSpeed(rect.left + DRAG_SCROLL_EDGE_PX - x);
       } else if (x > rect.right - DRAG_SCROLL_EDGE_PX) {
+        // Pushing right against a timeline that's already scrolled all the
+        // way to its current end (TOTAL_BARS) has nothing further to
+        // scroll INTO -- grow it first so there's room, the same growth
+        // renderClips() does after a commit, just live during the drag
+        // itself (a live-previewed reorder never calls renderClips() mid-
+        // gesture, so without this the timeline would just dead-end under
+        // an active drag instead of extending to meet it).
+        if (scrollArea.scrollLeft >= scrollArea.scrollWidth - scrollArea.clientWidth - 2) {
+          TOTAL_BARS += TIMELINE_GROW_PADDING_BARS;
+          buildTimelineGrid();
+        }
         scrollArea.scrollLeft += dragScrollSpeed(x - (rect.right - DRAG_SCROLL_EDGE_PX));
       }
     }
@@ -1309,12 +1363,16 @@
 
   // ---------- Render clips ----------
   function renderClips() {
+    growTimelineToFit(timelineEndBars());
+
     vocalLane.querySelectorAll(".clip").forEach(el => el.remove());
     beatsLane.querySelectorAll(".clip").forEach(el => el.remove());
     fxLane.querySelectorAll(".clip").forEach(el => el.remove());
     vocalLane2.querySelectorAll(".clip").forEach(el => el.remove());
     beatsLane2.querySelectorAll(".clip").forEach(el => el.remove());
     STEM_KEYS.forEach(k => stemLaneEls[k].querySelectorAll(".clip").forEach(el => el.remove()));
+    vocalLane.querySelectorAll(".xfade-marker, .xfade-overlap").forEach(el => el.remove());
+    beatsLane.querySelectorAll(".xfade-marker, .xfade-overlap").forEach(el => el.remove());
 
     vocalEmpty.style.display = clips.vocal.length ? "none" : "flex";
     beatsEmpty.style.display = clips.beats.length ? "none" : "flex";
@@ -1326,6 +1384,8 @@
     clips.beats.forEach(c => beatsLane.appendChild(buildClipEl(c)));
     clips.vocal2.forEach(c => vocalLane2.appendChild(buildClipEl(c)));
     clips.beats2.forEach(c => beatsLane2.appendChild(buildClipEl(c)));
+    renderCrossfadeMarkers(vocalLane, clips.vocal);
+    renderCrossfadeMarkers(beatsLane, clips.beats);
 
     // FX row grows to fit however deep the stack currently gets -- only
     // where clips actually overlap in time, not just because many exist
@@ -1465,6 +1525,136 @@
     el.querySelector(".handle.right").addEventListener("pointerdown", (e) => startClipTrim(e, clip, el, "right"));
 
     return el;
+  }
+
+  // ---------- Crossfade at clip boundaries (Vocal/Beats only) ----------
+  // One draggable dot per adjacent pair in a flush-packed lane -- press
+  // and drag it up/down to resize the fade, left/right to slide the
+  // transition point (continuous, no bar-grid snap); a plain tap (no real
+  // movement) is a no-op peek, same tap-vs-drag language every other clip
+  // gesture in this app already uses. Idle (no clip.fadeIn) renders as a
+  // small hollow ring; once a fade is set it fills solid and a hatched
+  // overlap region spans both clips, sized to the fade. The data
+  // (clip.fadeIn = {bars, offsetBars, prevUid, prevDurAtSet, curDurAtSet})
+  // always lives on the LATER clip of the pair -- see layout()'s
+  // invalidateStaleCrossfades for how moving/trimming/reordering either
+  // side clears it, and crossfadeExtentsFor for how it drives the actual
+  // audio scheduling.
+  function renderCrossfadeMarkers(lane, list) {
+    for (let i = 0; i < list.length - 1; i++) {
+      const prev = list[i], clip = list[i + 1];
+      if (prev.isSilence || clip.isSilence) continue; // nothing meaningful to fade into/out of silence
+      const fi = clip.fadeIn;
+      const active = !!fi && fi.bars > 0.02;
+      const seamBar = clip.position + (fi ? fi.offsetBars : 0);
+
+      const marker = document.createElement("div");
+      marker.className = "xfade-marker" + (active ? " active" : "");
+      marker.style.left = barsToPx(seamBar) + "px";
+      marker.dataset.owner = clip.uid;
+      marker.innerHTML = '<div class="xfade-dot"></div>';
+      marker.addEventListener("pointerdown", (e) => startCrossfadeDrag(e, list, i, marker));
+      lane.appendChild(marker);
+
+      if (active) {
+        const widthPx = barsToPx(fi.bars);
+        const overlap = document.createElement("div");
+        overlap.className = "xfade-overlap";
+        overlap.dataset.owner = clip.uid;
+        overlap.style.left = (barsToPx(seamBar) - widthPx / 2) + "px";
+        overlap.style.width = widthPx + "px";
+        lane.appendChild(overlap);
+      }
+    }
+  }
+
+  function startCrossfadeDrag(e, list, i, markerEl) {
+    e.preventDefault();
+    e.stopPropagation(); // don't also let this land on the clip body underneath and start a clip move
+    // Document-level listeners rather than setPointerCapture on the marker
+    // itself -- this element moves (see updatePreview, below) as the fade's
+    // offset changes mid-drag, and a captured element that relocates out
+    // from under the pointer is exactly the case setPointerCapture exists
+    // to keep routing events through anyway, but the safer, already-proven
+    // pattern elsewhere in this file (startChipDrag's ghost) is to just
+    // never depend on that for an element that's actively repositioning.
+    const pointerId = e.pointerId;
+    const prev = list[i], clip = list[i + 1];
+    const fi0 = clip.fadeIn;
+    const startFadeBars = fi0 ? fi0.bars : 0;
+    const startOffsetBars = fi0 ? fi0.offsetBars : 0;
+    const startX = e.clientX, startY = e.clientY;
+    // Can't exceed most of either clip's own length (nothing left over to
+    // otherwise sound like their normal, un-faded selves), and the
+    // transition point can only slide so far off-center before it isn't
+    // meaningfully "the boundary between these two clips" anymore.
+    const maxFadeBars = 2 * Math.min(prev.duration, clip.duration) * 0.9;
+    const maxOffsetBars = Math.min(prev.duration, clip.duration) * 0.4;
+    let moved = false;
+    let liveFadeBars = startFadeBars, liveOffsetBars = startOffsetBars;
+
+    const lane = markerEl.parentElement;
+    let overlapEl = lane.querySelector(`.xfade-overlap[data-owner="${clip.uid}"]`);
+    if (!overlapEl) {
+      overlapEl = document.createElement("div");
+      overlapEl.className = "xfade-overlap";
+      overlapEl.dataset.owner = clip.uid;
+      lane.insertBefore(overlapEl, markerEl);
+    }
+
+    function updatePreview() {
+      const seamBar = clip.position + liveOffsetBars;
+      markerEl.style.left = barsToPx(seamBar) + "px";
+      const widthPx = barsToPx(liveFadeBars);
+      overlapEl.style.left = (barsToPx(seamBar) - widthPx / 2) + "px";
+      overlapEl.style.width = widthPx + "px";
+      const active = liveFadeBars > 0.02;
+      overlapEl.style.display = active ? "" : "none";
+      markerEl.classList.toggle("active", active);
+    }
+
+    function onMove(ev) {
+      if (ev.pointerId !== pointerId) return;
+      ev.preventDefault();
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      if (!moved && (Math.abs(dx) > CLIP_MOVE_THRESHOLD_PX || Math.abs(dy) > CLIP_MOVE_THRESHOLD_PX)) moved = true;
+      // Up = longer, down = shorter -- 40px of vertical travel per bar,
+      // same feel as the mockup this was reviewed against.
+      liveFadeBars = Math.max(0, Math.min(maxFadeBars, startFadeBars - dy / 40));
+      liveOffsetBars = Math.max(-maxOffsetBars, Math.min(maxOffsetBars, startOffsetBars + pxToBars(dx)));
+      updatePreview();
+    }
+    function cleanup() {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      cancelActiveGesture = null;
+    }
+    function onUp(ev) {
+      if (ev.pointerId !== pointerId) return;
+      cleanup();
+      if (!moved) { renderClips(); return; } // plain tap -- no-op peek; re-render just drops the ad-hoc overlap element made above if it was never actually dragged into existence
+      if (liveFadeBars > 0.02) {
+        clip.fadeIn = {
+          bars: liveFadeBars,
+          offsetBars: liveOffsetBars,
+          // Snapshot of what this was set against -- layout()'s
+          // invalidateStaleCrossfades compares these on every future
+          // change and clears the fade the moment either no longer holds.
+          prevUid: prev.uid,
+          prevDurAtSet: prev.duration,
+          curDurAtSet: clip.duration,
+        };
+      } else {
+        delete clip.fadeIn;
+      }
+      renderClips();
+      commitHistory();
+    }
+    document.addEventListener("pointermove", onMove, { passive: false });
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    cancelActiveGesture = () => { cleanup(); renderClips(); };
   }
 
   // Reordering and scrolling are both horizontal gestures on a clip, so
@@ -3481,6 +3671,90 @@
     else scheduleBeats(ctx, dest, clip, at, dur);
   }
 
+  // For each clip in a flush-packed Vocal/Beats list, how far its *actual*
+  // scheduled audio needs to reach before/after its own nominal
+  // position/duration to cover an active crossfade -- preBars from this
+  // clip's own .fadeIn (with the clip before it), postBars from the NEXT
+  // clip's .fadeIn (since a crossfade's data lives on the later clip of
+  // its pair, see "Crossfade at clip boundaries"). Both halves of one
+  // crossfade are always derived from that single record, so they land
+  // on the exact same absolute time by construction -- no separate
+  // reconciliation between the two sides needed.
+  function crossfadeExtentsFor(list) {
+    const extents = new Map();
+    list.forEach((clip, i) => {
+      let preBars = 0, postBars = 0;
+      const fi = clip.fadeIn;
+      if (fi && i > 0 && !clip.isSilence && !list[i - 1].isSilence) {
+        preBars = Math.max(0, fi.bars / 2 - fi.offsetBars);
+      }
+      const nextFi = list[i + 1] && list[i + 1].fadeIn;
+      if (nextFi && !clip.isSilence && !list[i + 1].isSilence) {
+        postBars = Math.max(0, nextFi.bars / 2 + nextFi.offsetBars);
+      }
+      extents.set(clip.uid, { preBars, postBars });
+    });
+    return extents;
+  }
+
+  // Wraps scheduleClip in a per-clip gain node carrying the crossfade's
+  // fade-in/fade-out ramp, so every existing kind clip (real buffer or
+  // synthesized) gets it for free without touching its own synthesis.
+  // `elapsedIntoWindowSec` is how far past this clip's *true* extended
+  // start (nominal position minus its pre-roll) the `at`/`dur` actually
+  // being scheduled begins -- 0 for a normal full playthrough, > 0 only
+  // when a seek happens to land inside an already-extended crossfade
+  // region (a rare case this degrades gracefully on rather than handling
+  // perfectly: the ramp's absolute shape is still correct, just scheduled
+  // from partway through rather than from a clean start).
+  function scheduleClipWithFade(ctx, dest, clip, at, dur, offsetIntoClipSec, fadeInSec, fadeOutSec, elapsedIntoWindowSec) {
+    if (fadeInSec <= 0 && fadeOutSec <= 0) { scheduleClip(ctx, dest, clip, at, dur, offsetIntoClipSec); return; }
+    const gain = ctx.createGain();
+    gain.connect(dest);
+    const fullWindowSec = elapsedIntoWindowSec + dur;
+    // Guards a degenerate very-short window where a big fade-in and a big
+    // fade-out would otherwise overlap and schedule automation events out
+    // of order (WebAudio requires them monotonically increasing in time).
+    const fadeOutStartElapsed = Math.max(fadeInSec, fullWindowSec - fadeOutSec);
+
+    const valueAtStart = fadeInSec > 0 ? Math.min(1, elapsedIntoWindowSec / fadeInSec) : 1;
+    gain.gain.setValueAtTime(valueAtStart, at);
+    if (fadeInSec > 0 && elapsedIntoWindowSec < fadeInSec) {
+      gain.gain.linearRampToValueAtTime(1, at + (fadeInSec - elapsedIntoWindowSec));
+    }
+    if (fadeOutSec > 0 && fullWindowSec > elapsedIntoWindowSec) {
+      const rampStartOffset = Math.max(0, fadeOutStartElapsed - elapsedIntoWindowSec);
+      const rampEndOffset = fullWindowSec - elapsedIntoWindowSec;
+      if (rampStartOffset < rampEndOffset) {
+        gain.gain.setValueAtTime(1, at + rampStartOffset);
+        gain.gain.linearRampToValueAtTime(0, at + rampEndOffset);
+      }
+    }
+    scheduleClip(ctx, gain, clip, at, dur, offsetIntoClipSec);
+  }
+
+  // Crossfade-aware replacement for scheduling a flush-packed Vocal/Beats
+  // list -- everywhere else (vocal2/beats2, silence, FX) schedules off
+  // clip.position/.duration directly since only Vocal/Beats ever carry a
+  // .fadeIn. `atBase` is the ctx time corresponding to playheadBar itself
+  // (already includes any export lead-in).
+  function scheduleLaneWithCrossfades(ctx, dest, list, atBase, playheadBar) {
+    const extents = crossfadeExtentsFor(list);
+    list.forEach(clip => {
+      const { preBars, postBars } = extents.get(clip.uid) || { preBars: 0, postBars: 0 };
+      const extStartBar = clip.position - preBars;
+      const extEndBar = clip.position + clip.duration + postBars;
+      if (extEndBar <= playheadBar) return; // fully in the past, extended tail included
+      const elapsedIntoWindowBars = Math.max(0, playheadBar - extStartBar);
+      const startDelaySec = Math.max(0, barsToSeconds(extStartBar - playheadBar));
+      const playDurSec = barsToSeconds(extEndBar - extStartBar - elapsedIntoWindowBars);
+      const fadeInSec = preBars * BAR_SECONDS;
+      const fadeOutSec = postBars * BAR_SECONDS;
+      const offsetIntoClipSec = barsToSeconds(elapsedIntoWindowBars) - fadeInSec;
+      scheduleClipWithFade(ctx, dest, clip, atBase + startDelaySec, playDurSec, offsetIntoClipSec, fadeInSec, fadeOutSec, barsToSeconds(elapsedIntoWindowBars));
+    });
+  }
+
   // Plays a slice of the song's pre-rendered "matched" buffer for this
   // clip's track. clip.sourceStart/sourceEnd are offsets (seconds) into
   // that buffer, set when the section was dropped and adjusted by trimming;
@@ -3490,7 +3764,19 @@
     const song = SONGS.find(s => s.id === clip.songId);
     const buf = song && song._matched.buffers ? song._matched.buffers[clip.audioTrack] : null;
     if (!buf) return; // matched audio hasn't finished loading yet -- silent until it does
-    const srcOffset = clip.sourceStart + offsetIntoClipSec;
+    let srcOffset = clip.sourceStart + offsetIntoClipSec;
+    if (srcOffset < 0) {
+      // A crossfade's pre-roll (see scheduleClipWithFade) asked to read
+      // earlier than this song's own buffer actually has -- clamp to the
+      // buffer's start and give up that much of the requested pre-roll
+      // (start `at` correspondingly later) rather than erroring; a real
+      // AudioBufferSourceNode rejects a negative start offset outright.
+      const deficit = -srcOffset;
+      at += deficit;
+      dur -= deficit;
+      srcOffset = 0;
+    }
+    if (dur <= 0) return;
     const playDur = Math.max(0, Math.min(dur, buf.duration - srcOffset));
     if (playDur <= 0) return;
 
@@ -3783,7 +4069,13 @@
     const fxChain = buildFxChain(ctx);
     const mixDest = fxChain.masterInput;
 
-    [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
+    // Vocal/Beats go through the crossfade-aware scheduler (only they can
+    // ever carry a .fadeIn -- see "Crossfade at clip boundaries"); the
+    // freeform secondary lanes never flush-pack, so they have no shared
+    // seam to fade across and stay on the plain per-clip path.
+    scheduleLaneWithCrossfades(ctx, mixDest, clips.vocal, playStartCtxTime, playheadBar);
+    scheduleLaneWithCrossfades(ctx, mixDest, clips.beats, playStartCtxTime, playheadBar);
+    [...clips.vocal2, ...clips.beats2].forEach(clip => {
       const clipEndBar = clip.position + clip.duration;
       if (clipEndBar <= playheadBar) return;
       const offsetIntoClipBars = Math.max(0, playheadBar - clip.position);
@@ -3862,7 +4154,9 @@
     const fxChain = buildFxChain(offline);
     const mixDest = fxChain.masterInput;
 
-    [...clips.vocal, ...clips.beats, ...clips.vocal2, ...clips.beats2].forEach(clip => {
+    scheduleLaneWithCrossfades(offline, mixDest, clips.vocal, 0.05, 0);
+    scheduleLaneWithCrossfades(offline, mixDest, clips.beats, 0.05, 0);
+    [...clips.vocal2, ...clips.beats2].forEach(clip => {
       scheduleClip(offline, mixDest, clip, barsToSeconds(clip.position) + 0.05, barsToSeconds(clip.duration));
     });
     fxChain.forEach(({ clip, automate }) => {
