@@ -4397,6 +4397,20 @@
     // ones (panning the timeline) are left untouched.
     document.addEventListener("wheel", function (e) {
       if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      // #songLibrary (see its own CSS comment) is still a genuinely
+      // scrollable box of its own in embedded mode -- a trackpad/mouse
+      // wheel gesture over it should scroll *it* natively first, same as
+      // it already does for a touch drag. Only once it's already at its
+      // own top/bottom edge does handing the gesture up to the parent
+      // page make sense; relaying unconditionally (as this used to)
+      // hijacked every wheel tick over the FX/Songs list before the
+      // browser's own scroll handler ever got to move it, so a desktop
+      // trackpad user could never actually scroll the list at all.
+      if (songLibrary.contains(e.target)) {
+        const atTop = songLibrary.scrollTop <= 0;
+        const atBottom = songLibrary.scrollTop + songLibrary.clientHeight >= songLibrary.scrollHeight - 1;
+        if ((e.deltaY < 0 && !atTop) || (e.deltaY > 0 && !atBottom)) return;
+      }
       e.preventDefault();
       window.parent.postMessage({ type: "tuttii-embed-scroll", deltaY: e.deltaY }, "*");
     }, { passive: false });

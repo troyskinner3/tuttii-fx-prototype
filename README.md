@@ -780,6 +780,26 @@ against a number that the cap itself helps determine, feeding back into
 the resize loop above in a way that's needlessly hard to reason about.
 A fixed px has no such dependency.
 
+A desktop/trackpad-specific bug shipped alongside the fix above: the
+wheel-relay below it (`tuttii-embed-scroll`, forwarding a wheel/trackpad
+gesture to the parent page since an iframe never chain-scrolls it
+natively) intercepted and `preventDefault()`'d *every* vertical-dominant
+wheel event on the page unconditionally, with no check for whether it was
+actually happening over `#songLibrary`'s own still-scrollable box. On
+touch that's invisible (a touch drag scrolls the list via its own
+`overflow-y: auto` directly, never generating wheel events at all), but a
+trackpad or mouse wheel hovering the FX/Songs list got hijacked and
+redirected to the parent page before the browser's native scroll on
+`#songLibrary` ever got a chance to run — so a desktop user could never
+actually scroll the list itself, only the surrounding page. Fixed by
+checking first whether the event's target is inside `#songLibrary` and
+it still has room to scroll in that direction (`scrollTop` short of its
+own top/bottom edge); only once it's genuinely exhausted does the relay
+to the parent take over, same as any other nested-scroll-container
+"scroll chaining" pattern, just reimplemented by hand since the two
+scroll regions here are in different documents (iframe vs. parent) and
+can't lean on the browser's own `overscroll-behavior` for it.
+
 ### Auto-scroll during drag
 
 Two distinct edges matter here, fed by one shared `requestAnimationFrame`
